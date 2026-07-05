@@ -153,6 +153,10 @@ type IdentifyPayload struct {
 	DeviceID  string `json:"device_id"`
 	Name      string `json:"name"`
 	PublicIP  string `json:"public_ip"`
+	LocalIP   string `json:"local_ip"`
+	IsPrivate bool   `json:"is_private"`
+	Country   string `json:"country,omitempty"`
+	City      string `json:"city,omitempty"`
 	Version   int    `json:"version"`
 }
 

@@ -24,10 +24,11 @@ import (
 	hcore "github.com/apernet/hysteria/core/v2/server"
 	"github.com/apernet/hysteria/extras/v2/outbounds/speedtest"
 	"github.com/apernet/hysteria/extras/v2/realm"
-	"mscope-hysteria/internal/auth"
-	"mscope-hysteria/internal/certvault"
-	"mscope-hysteria/internal/configsource"
-	"mscope-hysteria/pkg/control"
+	"io"
+	"github.com/B83C/mscope-edge/internal/auth"
+	"github.com/B83C/mscope-edge/internal/certvault"
+	"github.com/B83C/mscope-edge/internal/configsource"
+	"github.com/B83C/mscope-edge/pkg/control"
 )
 
 // Set at build time via -ldflags -X main.centralPubB64=<base64>
@@ -117,6 +118,10 @@ type edge struct {
 
 	masqAtomic *atomicHandler
 
+	publicIP  string
+	localIP   string
+	isPrivate bool
+
 	readyCh chan struct{}
 	stopped chan struct{}
 }
@@ -128,6 +133,10 @@ func (e *edge) run(ctx context.Context, centralAddr string) error {
 	go e.serveDataPlane(ctx)
 
 	log.Printf("control: dialing central at %s, edge id %s", centralAddr, e.edgeID)
+
+	// Discover public IP once at startup
+	e.publicIP, e.localIP, e.isPrivate = discoverNetworkInfo()
+	log.Printf("network: public=%s local=%s private=%v", e.publicIP, e.localIP, e.isPrivate)
 
 	for {
 		if ctx.Err() != nil {
@@ -265,12 +274,15 @@ func (e *edge) handleCentral(ctx context.Context, conn net.Conn) {
 
 	go ch.Run(ctx)
 
-	// Identify: send hardware ID, wait for central verdict
+	// Identify: send hardware ID + network info, wait for central verdict
+	publicIP, localIP, isPrivate := e.netInfo()
 	ch.Send(control.MsgIdentify, control.IdentifyPayload{
-		DeviceID: deviceID(),
-		Name:     e.edgeID,
-		PublicIP: remoteAddrIP(remote),
-		Version:  1,
+		DeviceID:  deviceID(),
+		Name:      e.edgeID,
+		PublicIP:  publicIP,
+		LocalIP:   localIP,
+		IsPrivate: isPrivate,
+		Version:   1,
 	})
 
 	select {
@@ -679,6 +691,71 @@ func parseDuration(s string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+func (e *edge) netInfo() (publicIP, localIP string, isPrivate bool) {
+	if e.publicIP != "" {
+		return e.publicIP, e.localIP, e.isPrivate
+	}
+	return discoverNetworkInfo()
+}
+
+func discoverNetworkInfo() (publicIP, localIP string, isPrivate bool) {
+	// Get local IP from default route
+	if addrs, err := net.InterfaceAddrs(); err == nil {
+		for _, a := range addrs {
+			if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() && ipnet.IP.To4() != nil {
+				localIP = ipnet.IP.String()
+				break
+			}
+		}
+	}
+
+	// Discover public IP via HTTP API
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("https://ifconfig.me/ip")
+	if err == nil && resp.StatusCode == 200 {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		publicIP = strings.TrimSpace(string(b))
+	}
+	if publicIP == "" {
+		resp, err = client.Get("https://api.ipify.org")
+		if err == nil && resp.StatusCode == 200 {
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			publicIP = strings.TrimSpace(string(b))
+		}
+	}
+
+	isPrivate = isPrivateIP(publicIP) || isPrivateIP(localIP)
+	return
+}
+
+func isPrivateIP(ipStr string) bool {
+	if ipStr == "" {
+		return false
+	}
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+	// RFC1918
+	if ip4 := ip.To4(); ip4 != nil {
+		switch {
+		case ip4[0] == 10:
+			return true
+		case ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31:
+			return true
+		case ip4[0] == 192 && ip4[1] == 168:
+			return true
+		case ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127: // CGNAT
+			return true
+		case ip.IsLinkLocalUnicast():
+			return true
+		}
+	}
+	return false
 }
 
 func remoteAddrIP(addr net.Addr) string {
