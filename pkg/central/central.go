@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -45,6 +46,18 @@ func GenerateCert(sni string, ttl time.Duration) (der, keyDER []byte, pinHex str
 	sum := sha256.Sum256(der)
 	pinHex = fmt.Sprintf("%x", sum)
 	return
+}
+
+func PubkeyRawB64() (string, error) {
+	b, err := os.ReadFile("certs/central.pub")
+	if err != nil {
+		return "", err
+	}
+	block, _ := pem.Decode(b)
+	if block == nil {
+		return "", fmt.Errorf("no PEM block in certs/central.pub")
+	}
+	return base64.StdEncoding.EncodeToString(block.Bytes), nil
 }
 
 func GenerateKeypair(path string) error {

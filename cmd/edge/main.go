@@ -5,7 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
-	"encoding/hex"
+	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"flag"
@@ -30,10 +30,14 @@ import (
 	"mscope-hysteria/pkg/control"
 )
 
+// Set at build time via -ldflags -X main.centralPubB64=<base64>
+// If empty, falls back to -central-pub flag or certs/central.pub file.
+var centralPubB64 string
+
 func main() {
 	var (
 		centralAddr = flag.String("central-addr", "127.0.0.1:38472", "central server address to dial")
-		centralPub  = flag.String("central-pub", "certs/central.pub", "path to central public key (PEM)")
+		centralPub  = flag.String("central-pub", "", "path to central public key (PEM); overrides built-in key")
 		edgeID      = flag.String("edge-id", "", "edge identifier (default: hostname)")
 		dataListen  = flag.String("data-listen", "0.0.0.0:443", "hysteria data plane listen address")
 	)
@@ -47,9 +51,27 @@ func main() {
 		*edgeID = h
 	}
 
-	pub, err := loadCentralPub(*centralPub)
-	if err != nil {
-		log.Fatalf("load central pub: %v", err)
+	var pub ed25519.PublicKey
+	if *centralPub != "" {
+		var err error
+		pub, err = loadCentralPubFile(*centralPub)
+		if err != nil {
+			log.Fatalf("load central pub: %v", err)
+		}
+	} else if centralPubB64 != "" {
+		b, err := base64.StdEncoding.DecodeString(centralPubB64)
+		if err != nil {
+			log.Fatalf("decode built-in central pub: %v", err)
+		}
+		pub = ed25519.PublicKey(b)
+	} else {
+		pub, _ = loadCentralPubFile("certs/central.pub")
+		if pub == nil {
+			log.Fatal("no central public key found. Either:\n" +
+				"  1. Build with -ldflags=\"-X main.centralPubB64=$(base64 < certs/central.pub)\"\n" +
+				"  2. Place certs/central.pub next to the binary\n" +
+				"  3. Use -central-pub flag")
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -701,11 +723,15 @@ func edgeIDFile() string {
 	return cache + "/mscope-edge-id"
 }
 
-func loadCentralPub(path string) (ed25519.PublicKey, error) {
+func loadCentralPubFile(path string) (ed25519.PublicKey, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
+	return decodeCentralPub(b)
+}
+
+func decodeCentralPub(b []byte) (ed25519.PublicKey, error) {
 	block, _ := pem.Decode(b)
 	if block == nil {
 		return nil, errors.New("no PEM block found")
@@ -713,12 +739,5 @@ func loadCentralPub(path string) (ed25519.PublicKey, error) {
 	if len(block.Bytes) == ed25519.PublicKeySize {
 		return ed25519.PublicKey(block.Bytes), nil
 	}
-	raw, err := hex.DecodeString(string(block.Bytes))
-	if err != nil {
-		return nil, fmt.Errorf("decode pubkey: %w", err)
-	}
-	if len(raw) != ed25519.PublicKeySize {
-		return nil, fmt.Errorf("pubkey wrong size: %d", len(raw))
-	}
-	return ed25519.PublicKey(raw), nil
+	return nil, fmt.Errorf("pubkey wrong size: %d", len(block.Bytes))
 }

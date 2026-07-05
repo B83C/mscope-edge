@@ -4,24 +4,28 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
+	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"net"
+	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
 
-	"mscope-hysteria/internal/control"
+	"mscope-hysteria/pkg/control"
 	"mscope-hysteria/pkg/central"
 )
 
 func main() {
 	var (
-		listen      = flag.String("listen", "0.0.0.0:38472", "control channel listen address for edges")
-		usersFile   = flag.String("users-file", "", "path to JSON grants file (see users.json.example)")
-		privPath    = flag.String("priv", "central.priv", "central Ed25519 private key (PEM)")
-		centralID   = flag.String("id", "central-dev", "central identifier")
+		listen       = flag.String("listen", "0.0.0.0:38472", "control channel listen address for edges")
+		usersFile    = flag.String("users-file", "", "path to JSON grants file (see users.json.example)")
+		whitelistFile = flag.String("whitelist-file", "", "path to JSON file with allowed device IDs")
+		privPath     = flag.String("priv", "central.priv", "central Ed25519 private key (PEM)")
+		centralID    = flag.String("id", "central-dev", "central identifier")
 		sni         = flag.String("sni", "hysteria-internal", "SNI for data-plane cert")
 		masq        = flag.String("masq", "https://example.com", "masquerade URL")
 		tcpMbps     = flag.Int("tcpmbps", 100, "TCP bandwidth cap (Mbps)")
@@ -51,7 +55,11 @@ func main() {
 		if err := central.GenerateKeypair(*privPath); err != nil {
 			log.Fatal(err)
 		}
-		log.Printf("wrote keypair to %s and certs/central.pub", *privPath)
+		b64, err := central.PubkeyRawB64()
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("PUBKEY_B64=%s\n", b64)
 		return
 	}
 
@@ -66,6 +74,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	whitelist := loadWhitelist(*whitelistFile)
 
 	realmPayload := central.BuildRealmPayload(*rRelay, *rID, *rToken, splitSTUN(*rSTUN), *rStatic)
 
@@ -108,11 +118,11 @@ func main() {
 			log.Printf("accept: %v", err)
 			continue
 		}
-		go handleEdge(ctx, conn, priv, &serverCfg, &grants, &realmPayload, *sni, *certTTL, *centralID)
+		go handleEdge(ctx, conn, priv, &serverCfg, &grants, &realmPayload, whitelist, *sni, *certTTL, *centralID)
 	}
 }
 
-func handleEdge(ctx context.Context, conn net.Conn, priv ed25519.PrivateKey, cfg *control.ServerConfig, grants *control.GrantsPayload, realm *control.RealmPayload, sni string, certTTL time.Duration, id string) {
+func handleEdge(ctx context.Context, conn net.Conn, priv ed25519.PrivateKey, cfg *control.ServerConfig, grants *control.GrantsPayload, realm *control.RealmPayload, whitelist map[string]bool, sni string, certTTL time.Duration, id string) {
 	remote := conn.RemoteAddr()
 	defer conn.Close()
 
@@ -133,7 +143,15 @@ func handleEdge(ctx context.Context, conn net.Conn, priv ed25519.PrivateKey, cfg
 		return
 	}
 
+	var edgeIdentity control.IdentifyPayload
+	identified := make(chan struct{})
+
 	ch := control.NewChannel(tlsConn, control.Handlers{
+		OnIdentify: func(p control.IdentifyPayload) error {
+			edgeIdentity = p
+			close(identified)
+			return nil
+		},
 		OnError: func(p control.ErrorPayload) error {
 			log.Printf("edge %s error: %s %s", remote, p.Code, p.Message)
 			return nil
@@ -141,6 +159,28 @@ func handleEdge(ctx context.Context, conn net.Conn, priv ed25519.PrivateKey, cfg
 	}, "central")
 	go ch.Run(ctx)
 
+	// Wait for identification
+	select {
+	case <-identified:
+	case <-time.After(10 * time.Second):
+		log.Printf("edge %s identify timeout", remote)
+		ch.Send(control.MsgReject, control.RejectPayload{Reason: "identify timeout"})
+		return
+	}
+
+	log.Printf("edge %s identified: device=%s name=%s ip=%s", remote, edgeIdentity.DeviceID, edgeIdentity.Name, edgeIdentity.PublicIP)
+
+	// Check whitelist
+	if len(whitelist) > 0 {
+		if !whitelist[edgeIdentity.DeviceID] {
+			log.Printf("edge %s device %s NOT in whitelist, rejecting", remote, edgeIdentity.DeviceID)
+			ch.Send(control.MsgReject, control.RejectPayload{Reason: "device not in whitelist"})
+			return
+		}
+		log.Printf("edge %s device %s whitelisted, accepting", remote, edgeIdentity.DeviceID)
+	}
+
+	ch.Send(control.MsgAccept, control.AcceptPayload{Message: "welcome"})
 	central.PushHello(ch, id)
 	central.PushConfig(ch, *cfg)
 	central.PushCert(ch, sni, certTTL)
@@ -148,6 +188,26 @@ func handleEdge(ctx context.Context, conn net.Conn, priv ed25519.PrivateKey, cfg
 	central.PushRealm(ch, *realm)
 	log.Printf("edge %s complete, holding", remote)
 	<-ctx.Done()
+}
+
+func loadWhitelist(path string) map[string]bool {
+	if path == "" {
+		return nil
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		log.Fatalf("whitelist file: %v", err)
+	}
+	var ids []string
+	if err := json.Unmarshal(b, &ids); err != nil {
+		log.Fatalf("whitelist parse: %v", err)
+	}
+	m := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		m[id] = true
+	}
+	log.Printf("whitelist loaded: %d device(s)", len(ids))
+	return m
 }
 
 func splitSTUN(s string) []string {

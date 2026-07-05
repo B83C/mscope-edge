@@ -53,5 +53,7 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            CENTRAL_PUB_B64=${{ secrets.CENTRAL_PUB_B64 }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
