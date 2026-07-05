@@ -4,12 +4,15 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -24,7 +27,6 @@ import (
 	hcore "github.com/apernet/hysteria/core/v2/server"
 	"github.com/apernet/hysteria/extras/v2/outbounds/speedtest"
 	"github.com/apernet/hysteria/extras/v2/realm"
-	"io"
 	"github.com/B83C/mscope-edge/internal/auth"
 	"github.com/B83C/mscope-edge/internal/certvault"
 	"github.com/B83C/mscope-edge/internal/configsource"
@@ -262,6 +264,9 @@ func (e *edge) handleCentral(ctx context.Context, conn net.Conn) {
 		},
 		OnRealm: func(p control.RealmPayload) error {
 			return e.applyRealm(ctx, p)
+		},
+		OnUpgrade: func(p control.UpgradePayload) error {
+			return e.applyUpgrade(ctx, p)
 		},
 		OnCentralGone: func() {
 			log.Printf("control: central gone, data plane and realm continue serving (cert=%s)",
@@ -548,6 +553,76 @@ func (e *edge) applyRealm(_ context.Context, p control.RealmPayload) error {
 	}
 	e.startRealm()
 	return nil
+}
+
+func (e *edge) applyUpgrade(ctx context.Context, p control.UpgradePayload) error {
+	log.Printf("upgrade: version=%s url=%s sha256=%s", p.Version, p.URL, p.SHA256)
+
+	if p.URL == "" || p.SHA256 == "" {
+		return fmt.Errorf("upgrade: invalid payload")
+	}
+
+	// Download
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.URL, nil)
+	if err != nil {
+		return fmt.Errorf("upgrade: request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("upgrade: download: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("upgrade: download status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("upgrade: read: %w", err)
+	}
+
+	// Verify SHA256
+	sum := sha256.Sum256(body)
+	gotHex := hex.EncodeToString(sum[:])
+	if gotHex != p.SHA256 {
+		return fmt.Errorf("upgrade: sha256 mismatch: got %s, want %s", gotHex, p.SHA256)
+	}
+
+	// Write to temp
+	tmpPath := "/tmp/mscope-edge-upgrade"
+	if err := os.WriteFile(tmpPath, body, 0755); err != nil {
+		return fmt.Errorf("upgrade: write: %w", err)
+	}
+
+	// Get current executable path
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("upgrade: executable: %w", err)
+	}
+
+	// Backup current binary
+	backupPath := "/tmp/mscope-edge-rollback"
+	if err := os.Rename(self, backupPath); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("upgrade: backup: %w", err)
+	}
+
+	// Replace with new binary
+	if err := os.Rename(tmpPath, self); err != nil {
+		os.Rename(backupPath, self) // restore
+		os.Remove(tmpPath)
+		return fmt.Errorf("upgrade: replace: %w", err)
+	}
+
+	log.Printf("upgrade: swapped, restarting...")
+
+	// Graceful shutdown: stop data plane, close channel
+	e.mu.Lock()
+	e.shutdownServerLocked()
+	e.mu.Unlock()
+
+	// Restart with new binary
+	return syscall.Exec(self, os.Args, os.Environ())
 }
 
 func (e *edge) startRealmIfConfigured() {

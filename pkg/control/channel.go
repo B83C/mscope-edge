@@ -14,6 +14,7 @@ import (
 
 type Handlers struct {
 	OnHello    func(HelloPayload) error
+	OnHeartbeat func(HeartbeatPayload) error
 	OnConfig   func(ConfigPayload) error
 	OnCert     func(CertPayload) error
 	OnGrants   func(GrantsPayload) error
@@ -23,6 +24,7 @@ type Handlers struct {
 	OnIdentify func(IdentifyPayload) error
 	OnAccept   func(AcceptPayload) error
 	OnReject   func(RejectPayload) error
+	OnUpgrade  func(UpgradePayload) error
 	OnError    func(ErrorPayload) error
 	OnCentralGone func()
 }
@@ -185,7 +187,25 @@ func (c *Channel) dispatch(env Envelope) error {
 		if c.handlers.OnReject != nil {
 			return c.handlers.OnReject(p)
 		}
-	case MsgAck, MsgHeartbeat:
+	case MsgHeartbeat:
+		var p HeartbeatPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return err
+		}
+		if c.handlers.OnHeartbeat != nil {
+			return c.handlers.OnHeartbeat(p)
+		}
+		return nil
+	case MsgUpgrade:
+		var p UpgradePayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return err
+		}
+		if c.handlers.OnUpgrade != nil {
+			return c.handlers.OnUpgrade(p)
+		}
+		return nil
+	case MsgAck:
 		return nil
 	case MsgError:
 		var p ErrorPayload

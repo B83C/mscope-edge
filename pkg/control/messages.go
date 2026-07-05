@@ -22,6 +22,7 @@ const (
 	MsgIdentify MessageType = "identify"
 	MsgAccept   MessageType = "accept"
 	MsgReject   MessageType = "reject"
+	MsgUpgrade  MessageType = "upgrade"
 	MsgAck      MessageType = "ack"
 	MsgError    MessageType = "error"
 )
@@ -166,4 +167,11 @@ type AcceptPayload struct {
 
 type RejectPayload struct {
 	Reason string `json:"reason"`
+}
+
+type UpgradePayload struct {
+	URL         string `json:"url"`
+	SHA256      string `json:"sha256"`
+	Version     string `json:"version"`
+	Force       bool   `json:"force"`
 }
