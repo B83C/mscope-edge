@@ -19,6 +19,6 @@ RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
 FROM alpine:3.21 AS runtime
 RUN apk add --no-cache ca-certificates tzdata
 COPY --from=builder /edge /usr/bin/mscope-edge
+COPY docker-entrypoint.sh /docker-entrypoint.sh
 EXPOSE 443/udp 8443/udp
-ENTRYPOINT ["mscope-edge"]
-CMD ["-central-addr", "central:38472", "-data-listen", "0.0.0.0:443"]
+ENTRYPOINT ["/docker-entrypoint.sh"]
