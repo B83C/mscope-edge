@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/pem"
@@ -26,7 +27,7 @@ import (
 	"mscope-hysteria/internal/auth"
 	"mscope-hysteria/internal/certvault"
 	"mscope-hysteria/internal/configsource"
-	"mscope-hysteria/internal/control"
+	"mscope-hysteria/pkg/control"
 )
 
 func main() {
@@ -167,17 +168,25 @@ func (e *edge) handleCentral(ctx context.Context, conn net.Conn) {
 	}
 	log.Printf("control: tls established with %s", remote)
 
-	// Don't kill the running server on central reconnect.
-	// Config/cert changes are applied hot or via rebuildServer.
 	e.mu.Lock()
 	e.lastCold = ""
 	e.mu.Unlock()
 
-	// Channel lifecycle manages centralActive — it gets set to false in a
-	// defer when the channel session ends (central disconnect or error).
+	// Identification exchange: send device ID, wait for accept/reject
+	identCh := make(chan error, 1)
 
 	var ch *control.Channel
 	ch = control.NewChannel(tlsConn, control.Handlers{
+		OnAccept: func(p control.AcceptPayload) error {
+			log.Printf("control: accepted by central: %s", p.Message)
+			identCh <- nil
+			return nil
+		},
+		OnReject: func(p control.RejectPayload) error {
+			log.Printf("control: REJECTED by central: %s", p.Reason)
+			identCh <- fmt.Errorf("rejected: %s", p.Reason)
+			return nil
+		},
 		OnHello: func(p control.HelloPayload) error {
 			log.Printf("control: hello from central %s (proto v%d)", p.CentralID, p.ProtocolVersion)
 			return ch.Send(control.MsgAck, nil)
@@ -230,7 +239,36 @@ func (e *edge) handleCentral(ctx context.Context, conn net.Conn) {
 		},
 	}, e.edgeID)
 
-	ch.Run(ctx)
+	go ch.Run(ctx)
+
+	// Identify: send hardware ID, wait for central verdict
+	ch.Send(control.MsgIdentify, control.IdentifyPayload{
+		DeviceID: deviceID(),
+		Name:     e.edgeID,
+		PublicIP: remoteAddrIP(remote),
+		Version:  1,
+	})
+
+	select {
+	case err := <-identCh:
+		if err != nil {
+			tlsConn.Close()
+			e.centralMu.Lock()
+			e.centralActive = false
+			e.centralMu.Unlock()
+			return
+		}
+	case <-time.After(10 * time.Second):
+		log.Printf("control: identify timeout")
+		tlsConn.Close()
+		e.centralMu.Lock()
+		e.centralActive = false
+		e.centralMu.Unlock()
+		return
+	}
+
+	// Wait for channel to close (central disconnect)
+	<-ch.Done()
 
 	e.centralMu.Lock()
 	e.centralActive = false
@@ -615,6 +653,48 @@ func parseDuration(s string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+func remoteAddrIP(addr net.Addr) string {
+	switch a := addr.(type) {
+	case *net.TCPAddr:
+		return a.IP.String()
+	default:
+		return addr.String()
+	}
+}
+
+func deviceID() string {
+	b, err := os.ReadFile("/etc/machine-id")
+	if err == nil && len(b) >= 32 {
+		return string(b[:32])
+	}
+	b, err = os.ReadFile("/var/lib/dbus/machine-id")
+	if err == nil && len(b) >= 32 {
+		return string(b[:32])
+	}
+	b, err = os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err == nil && len(b) >= 36 {
+		return string(b[:36])
+	}
+	// Last resort: generate a UUID and cache it
+	idPath := edgeIDFile()
+	if b, err := os.ReadFile(idPath); err == nil && len(b) > 0 {
+		return string(b)
+	}
+	var buf [16]byte
+	rand.Read(buf[:])
+	id := fmt.Sprintf("%x", buf)
+	os.WriteFile(idPath, []byte(id), 0644)
+	return id
+}
+
+func edgeIDFile() string {
+	cache, _ := os.UserCacheDir()
+	if cache == "" {
+		cache = "/tmp"
+	}
+	return cache + "/mscope-edge-id"
 }
 
 func loadCentralPub(path string) (ed25519.PublicKey, error) {

@@ -20,6 +20,9 @@ type Handlers struct {
 	OnRevoke   func(RevokePayload) error
 	OnDrain    func(DrainPayload) error
 	OnRealm    func(RealmPayload) error
+	OnIdentify func(IdentifyPayload) error
+	OnAccept   func(AcceptPayload) error
+	OnReject   func(RejectPayload) error
 	OnError    func(ErrorPayload) error
 	OnCentralGone func()
 }
@@ -157,6 +160,30 @@ func (c *Channel) dispatch(env Envelope) error {
 		}
 		if c.handlers.OnRealm != nil {
 			return c.handlers.OnRealm(p)
+		}
+	case MsgIdentify:
+		var p IdentifyPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return err
+		}
+		if c.handlers.OnIdentify != nil {
+			return c.handlers.OnIdentify(p)
+		}
+	case MsgAccept:
+		var p AcceptPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return err
+		}
+		if c.handlers.OnAccept != nil {
+			return c.handlers.OnAccept(p)
+		}
+	case MsgReject:
+		var p RejectPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return err
+		}
+		if c.handlers.OnReject != nil {
+			return c.handlers.OnReject(p)
 		}
 	case MsgAck, MsgHeartbeat:
 		return nil

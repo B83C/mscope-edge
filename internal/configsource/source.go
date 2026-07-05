@@ -4,7 +4,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"mscope-hysteria/internal/control"
+	"mscope-hysteria/pkg/control"
 )
 
 type Source struct {

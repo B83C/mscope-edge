@@ -19,6 +19,9 @@ const (
 	MsgRevoke   MessageType = "revoke"
 	MsgDrain    MessageType = "drain"
 	MsgRealm    MessageType = "realm"
+	MsgIdentify MessageType = "identify"
+	MsgAccept   MessageType = "accept"
+	MsgReject   MessageType = "reject"
 	MsgAck      MessageType = "ack"
 	MsgError    MessageType = "error"
 )
@@ -144,4 +147,19 @@ type DrainPayload struct {
 type ErrorPayload struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+}
+
+type IdentifyPayload struct {
+	DeviceID  string `json:"device_id"`
+	Name      string `json:"name"`
+	PublicIP  string `json:"public_ip"`
+	Version   int    `json:"version"`
+}
+
+type AcceptPayload struct {
+	Message string `json:"message"`
+}
+
+type RejectPayload struct {
+	Reason string `json:"reason"`
 }

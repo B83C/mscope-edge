@@ -16,7 +16,7 @@ import (
 	"os"
 	"time"
 
-	"mscope-hysteria/internal/control"
+	"mscope-hysteria/pkg/control"
 )
 
 func GenerateCert(sni string, ttl time.Duration) (der, keyDER []byte, pinHex string, tmpl *x509.Certificate, err error) {
