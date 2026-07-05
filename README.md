@@ -148,7 +148,8 @@ hysteria-realm-server \
 | `internal/auth/ttl.go` | TTL'd user grants, session counter, `EventLogger` impl |
 | `internal/configsource/source.go` | Latest `ServerConfig` from control channel |
 | `cmd/edge/main.go` | Edge binary: listens for central, runs hysteria |
-| `cmd/central/main.go` | Central binary (dev): dials edge, pushes cert+config+grants, publishes pin |
+| `cmd/central/main.go` | Central CLI: listens for edges, pushes cert+config+grants |
+| `pkg/central/central.go` | Central library: importable by your dashboard server |
 
 ## Build
 
@@ -158,6 +159,39 @@ go build -o central ./cmd/central
 ```
 
 Requires Go 1.22+. Pulls in `github.com/apernet/hysteria/core/v2` as a Go module.
+
+## Use as a library (for your dashboard/server)
+
+```go
+import "mscope-hysteria/pkg/central"
+
+func pushConfigToEdge(ctx context.Context, addr string) error {
+    priv, _ := central.LoadKeypair("central.priv")
+    ch, _ := central.Dial(ctx, addr, priv)
+    defer ch.Close()
+
+    central.PushHello(ch, "central-dev")
+    central.PushConfig(ch, control.ServerConfig{
+        Listen:  "0.0.0.0:443",
+        CertSNI: "hysteria-internal",
+        TCPMbps: 200,
+    })
+    pin, _ := central.PushCert(ch, "hysteria-internal", 24*time.Hour)
+    central.PushGrants(ch, grants)
+    central.PushRealm(ch, realmPayload)
+    
+    // pin is the hex-encoded SHA-256 of the cert;
+    // distribute it to clients via your dashboard
+    return nil
+}
+```
+
+See `pkg/central/central.go` for all exported functions:
+- `GenerateCert(sni, ttl) → der, key, pinHex`
+- `GenerateKeypair(path)` / `LoadKeypair(path) → priv`
+- `LoadGrants(path) → GrantsPayload`
+- `Dial(ctx, addr, priv) → *control.Channel`
+- `PushHello/Config/Cert/Grants/Realm(ch, ...)`
 
 ## Run
 
