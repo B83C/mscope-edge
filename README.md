@@ -1,206 +1,166 @@
-# mscope-edge
-
-A wrapper around [Hysteria 2](https://github.com/apernet/hysteria). The **edge** runs behind NAT at home; the **central** is a public server (or embedded in your dashboard) that pushes certs, configs, and user grants to the edge over a TLS-encrypted control channel.
-
-No port forwarding needed. The edge dials out to central.
-
-## How a client connects
-
-```yaml
-# client.yaml
-server: hysteria.example.com:443
-
-tls:
-  sni: hysteria-internal          # arbitrary, not verified
-  pinSHA256: "9d41a6a03670ed6d..."  # hex of SHA-256(cert DER), rotated daily
-
-auth: "user1:CHANGE_ME"
-```
-
-The edge speaks the **stock Hysteria 2 wire protocol** — clients don't need custom code.
-
-## Architecture
+## Auth flow
 
 ```
- homes (NAT)                                  cloud / vps
-┌──────────────────────┐            ┌──────────────────────────┐
-│  edge                │            │  central / dashboard     │
-│  (no public port)    │  TCP dial  │  (listens :38472)       │
-│                      │───────────►│                          │
-│  ┌────────────────┐  │  Ed25519   │  pushes after auth:      │
-│  │ hysteria/core  │  │  + TLS 1.3 │  - TLS cert             │
-│  │  (QUIC :443)   │◄─┼────────────│  - server config         │
-│  │  GetCertificate│  │  clients   │  - user grants           │
-│  │  auth.Store    │  │  (hysteria)│  - realm config          │
-│  └────────────────┘  │            └──────────────────────────┘
-└──────────────────────┘
+edge                              central
+ │  TCP dial ─────────────────────► │
+ │  Ed25519 challenge (32 bytes) ──►│
+ │  ◄── {ts, sig(challenge||ts)} ── │   central proves identity
+ │   verify sig(centralPub)         │
+ │  ◄── TLS 1.3 (pinned cert) ──── │   encrypted channel
+ │  {device_id, name, ip} ─────────►│   edge identifies itself
+ │                                  │
+ │  ◄── MsgAccept / MsgReject ──── │   central checks whitelist
+ │  ◄── MsgHello ───────────────── │
+ │  ◄── MsgConfig ──────────────── │
+ │  ◄── MsgCert ────────────────── │
+ │  ◄── MsgGrants ──────────────── │
+ │  ◄── MsgRealm ───────────────── │
 ```
 
-## Connection flow
+- **Edge verifies central**: using the baked-in `central.pub` (Ed25519 challenge-response)
+- **Central verifies edge**: by checking `device_id` against the whitelist (`-whitelist-file`)
+- Device ID is hardware-bound (`/etc/machine-id`, persistent across reboots)
 
-```
-1. edge dials → central:38472 (TCP)
-2. Ed25519 challenge-response (edge verifies central's key)
-3. TLS 1.3 handshake (pinned cert, encrypted channel)
-4. Edge sends hardware ID (device_id, name, public_ip)
-5. Central checks whitelist → accepts or rejects
-6. If accepted: central pushes cert, config, grants, realm config
-7. Edge builds the Hysteria data plane on the configured UDP port
-8. Clients connect to the edge directly or via realm NAT punching
-```
+## Build
 
-## Hot reload
-
-| Field | Hot? | Notes |
-|---|---|---|
-| TLS cert | ✅ | `GetCertificate` → next handshake picks up new cert |
-| User grants | ✅ | `auth.Store` mutates in place |
-| `TCPMbps` | ✅ for new conns | Mutated on live `*hcore.Config` |
-| `MaxClients` | ✅ | Counter in `auth.Store` |
-| `UDPIdleSecs` | ✅ for new conns | |
-| `MasqDomain` | ✅ | `atomicHandler` swaps live |
-| `Listen` port | ❌ | UDP socket bound at construction |
-| Realm config | ✅ | Realm loop restarts |
-
-## Run
-
-### 1. Generate keypair (one time)
+### 1. Generate a keypair (one time)
 
 ```sh
 go run ./cmd/central -gen-key
-# writes central.priv and certs/central.pub
+# Outputs: PUBKEY_B64=<base64 of the raw 32-byte public key>
+#
+# Writes: central.priv  (keep this — your webserver uses it to sign)
+#         certs/central.pub
 ```
 
-### 2. Start central (on your public server)
+### 2. Build the edge with the key baked in
+
+```sh
+B64=$(go run ./cmd/central -gen-key 2>&1 | grep PUBKEY_B64 | sed 's/PUBKEY_B64=//')
+
+go build \
+  -ldflags="-X main.centralPubB64=$B64" \
+  -o edge ./cmd/edge
+```
+
+The resulting `edge` binary has the central's public key embedded. It will **only connect to a central that holds the matching private key**. This prevents rogue servers from impersonating your central.
+
+### 3. Run central (on your public server)
 
 ```sh
 ./central \
   -listen 0.0.0.0:38472 \
+  -priv central.priv \
   -users-file users.json \
-  -priv central.priv
+  -whitelist-file whitelist.json
 ```
 
-Central listens on TCP 38472 for incoming edge connections. Multiple edges can connect; each is handled in its own goroutine.
+Central listens on TCP 38472. Multiple edges can connect.
 
-### 3. Start edge (on your home network)
+### 4. Run edge (on your home network)
 
 ```sh
-./edge \
-  -central-addr central.example.com:38472 \
-  -data-listen 0.0.0.0:443 \
-  -central-pub /path/to/certs/central.pub
+./edge -central-addr central.example.com:38472 -data-listen 0.0.0.0:443
 ```
 
-Edge dials central, authenticates, receives config/cert/grants, then starts the Hysteria data plane. No port forwarding needed.
+That's it. No `-central-pub` flag. The key is baked in. The edge connects, proves central's identity, sends its hardware ID, gets config/cert/grants, and starts serving.
+
+## Web server integration
+
+Your dashboard server imports `pkg/central` to push configs to edges:
+
+```go
+import "mscope-hysteria/pkg/central"
+
+// Load the private key (from central.priv, generated in step 1)
+priv, _ := central.LoadKeypair("central.priv")
+
+// Connect to an edge and push config
+ch, _ := central.Dial(ctx, "edge-ip:38472", priv)
+
+central.PushHello(ch, "my-dashboard")
+central.PushConfig(ch, serverCfg)          // QUIC tuning, UDP, masq, etc.
+central.PushGrants(ch, grantsPayload)       // user credentials
+pin, _ := central.PushCert(ch, sni, 24*time.Hour)  // self-signed TLS cert
+central.PushRealm(ch, realmPayload)          // NAT punching config
+```
+
+The `central.Dial()` call:
+1. Accepts the edge's Ed25519 challenge (proves central's identity using `central.priv`)
+2. Establishes TLS using the same key
+3. Receives the edge's `MsgIdentify` (device_id, name, IP)
+4. Returns `*control.Channel` for further pushes
+
+You can log the edge identity and decide whether to proceed:
+
+```go
+ch, _ := central.Dial(ctx, edgeAddr, priv)
+// ch has already received MsgIdentify from the edge
+// Log it or check whitelist in your DB
+```
 
 ## Edge identity & whitelist
 
-On connect, the edge sends its hardware ID (from `/etc/machine-id` or equivalent) to central. Central checks a whitelist:
+The edge identifies itself with:
+- **device_id**: from `/etc/machine-id` (hardware-bound, persistent)
+- **name**: the `-edge-id` flag (defaults to hostname)
+- **public_ip**: the IP address central sees the connection from
 
-```sh
-./central -whitelist-file /path/to/whitelist.json
-```
+Whitelist file (JSON array of device IDs):
 
 ```json
 ["d30ca57ef1304aeb98141d26535c146d"]
 ```
 
-If `-whitelist-file` is omitted, all edges are accepted. The device ID is always logged so you can populate the whitelist later.
-
-## Use as a library (in your dashboard server)
-
-```go
-import "mscope-hysteria/pkg/central"
-
-priv, _ := central.LoadKeypair("central.priv")
-ch, _ := central.Dial(ctx, "edge:38472", priv)
-
-central.PushHello(ch, "central-dev")
-central.PushConfig(ch, serverConfig)
-pin, _ := central.PushCert(ch, "hysteria-internal", 24*time.Hour)
-central.PushGrants(ch, grants)
-central.PushRealm(ch, realmPayload)
+```sh
+./central -whitelist-file /path/to/whitelist.json
 ```
 
-See `pkg/central/central.go` for all exported functions.
+If omitted, all edges are accepted. The device ID is always logged so you can populate the whitelist later from your database.
 
-## Realm (NAT-traversal)
+## Docker
 
-The edge can register with a [realm relay](https://github.com/apernet/hysteria-realm-server) so `realm://` clients can punch through NAT. Config is pushed by central:
+Build with your key baked in:
 
 ```sh
-./central \
-  -realm-relay "https://relay.example.com" \
-  -realm-id "my-realm" \
-  -realm-token "shared-secret-with-relay"
+B64=$(go run ./cmd/central -gen-key 2>&1 | grep PUBKEY_B64 | sed 's/PUBKEY_B64=//')
+
+docker build \
+  --build-arg CENTRAL_PUB_B64="$B64" \
+  -t mscope-edge .
 ```
 
-Default STUN servers (same as upstream Hysteria, chosen for restricted regions):
-- `stun.nextcloud.com:3478`
-- `stun.sip.us:3478`
-- `global.stun.twilio.com:3478`
+Or pull from GHCR (if you've set the `CENTRAL_PUB_B64` secret):
 
-## Client config
-
-```yaml
-server: hysteria.example.com:443
-tls:
-  sni: hysteria-internal
-  insecure: true
-  pinSHA256: "9d41a6a03670ed6d2ef26ec843a96f168a0d3dcb3d7c714f1ea3f4d59f5ea778"
-auth: "user1:CHANGE_ME"
+```sh
+docker run -d --name mscope-edge \
+  -p 443:443/udp \
+  ghcr.io/B83C/mscope-edge:latest \
+  -central-addr central.example.com:38472 \
+  -data-listen 0.0.0.0:443
 ```
 
-The pin is 64-character lowercase hex (SHA-256 of the cert DER). Rotated daily.
+Multi-arch: amd64, arm64, arm/v7. Auto-built on push to `main` if `CENTRAL_PUB_B64` secret is set in the repo.
 
-## All flags
+## Central flags
 
-### Edge (`./edge`)
+| Flag | Default | Description |
+|---|---|---|
+| `-listen` | `0.0.0.0:38472` | TCP listen for edges |
+| `-priv` | `central.priv` | Ed25519 private key |
+| `-users-file` | — | JSON grants file |
+| `-whitelist-file` | — | JSON device ID whitelist |
+| `-server-listen` | `0.0.0.0:443` | Data plane port pushed to edges |
+| `-masq` | `https://example.com` | Masquerade URL |
+| `-disable-udp` | `false` | Disable UDP |
+| `-congestion` | `""` | Congestion: `bbr` or empty |
+| `-realm-*` | — | Realm relay config |
+
+## Edge flags
 
 | Flag | Default | Description |
 |---|---|---|
 | `-central-addr` | `127.0.0.1:38472` | Central address to dial |
-| `-data-listen` | `0.0.0.0:443` | Hysteria UDP data plane |
-| `-central-pub` | `certs/central.pub` | Central's Ed25519 public key (PEM) |
+| `-data-listen` | `0.0.0.0:443` | UDP data plane port |
+| `-central-pub` | `""` | Override baked-in key (PEM file path) |
 | `-edge-id` | hostname | Edge name sent during identification |
-
-### Central (`./central`)
-
-| Flag | Default | Description |
-|---|---|---|
-| `-listen` | `0.0.0.0:38472` | TCP listen address for edges |
-| `-users-file` | — | JSON file with user grants |
-| `-whitelist-file` | — | JSON array of allowed device IDs |
-| `-priv` | `central.priv` | Ed25519 private key |
-| `-server-listen` | `0.0.0.0:443` | Data plane port pushed to edges |
-| `-masq` | `https://example.com` | Masquerade URL |
-| `-disable-udp` | `false` | Disable UDP forwarding |
-| `-congestion` | `""` | Congestion control: `bbr` or empty |
-| `-quic-*` | varies | QUIC tuning |
-| `-realm-*` | — | Realm relay config |
-
-## Docker
-
-```sh
-docker run -d --name mscope-edge \
-  -v /path/to/certs:/etc/mscope \
-  -p 443:443/udp \
-  ghcr.io/B83C/mscope-edge:latest \
-  -central-addr central.example.com:38472 \
-  -data-listen 0.0.0.0:443 \
-  -central-pub /etc/mscope/central.pub
-```
-
-Multi-arch: amd64, arm64, arm/v7. Auto-built via GitHub Actions on push to `main`.
-
-## What's not implemented (yet)
-
-- Per-message signing on the JSON stream (handshake only authenticates the connection)
-- Cert renewal loop (currently keyed to central connect; TTL expires after 24h without reconnect)
-- NAT keepalive for realm relay UDP mappings
-- Punch optimizations (100ms interval is conservative)
-- API endpoint for TrafficLogger stats (exported via `auth.Store.AllStats()` — your dashboard can call it directly)
-
-## License
-
-Same as upstream Hysteria (MIT).
