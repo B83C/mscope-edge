@@ -70,7 +70,7 @@ That's it. No `-central-pub` flag. The key is baked in. The edge connects, prove
 Your dashboard server imports `pkg/central` to push configs to edges:
 
 ```go
-import "mscope-hysteria/pkg/central"
+import "github.com/B83C/mscope-edge/pkg/central"
 
 // Load the private key (from central.priv, generated in step 1)
 priv, _ := central.LoadKeypair("central.priv")
