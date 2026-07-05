@@ -93,6 +93,8 @@ type edge struct {
 	realmCancel context.CancelFunc
 	realmCfg    realmConfig
 
+	masqAtomic *atomicHandler
+
 	readyCh chan struct{}
 	stopped chan struct{}
 }
@@ -290,7 +292,7 @@ func (e *edge) applyConfig(ctx context.Context, p control.ConfigPayload) error {
 		return e.maybeBuildServer(ctx)
 	}
 	if cold != currentCold {
-		log.Printf("data: cold config changed (port/masq), rebuilding server")
+		log.Printf("data: cold config changed (port), rebuilding server")
 		return e.rebuildServer(ctx)
 	}
 	log.Printf("data: hot config change, mutating live server")
@@ -335,6 +337,9 @@ func (e *edge) applyHotConfig(c control.ServerConfig) error {
 	if c.UDPIdleSecs > 0 {
 		e.hCfg.UDPIdleTimeout = time.Duration(c.UDPIdleSecs) * time.Second
 	}
+	if c.MasqDomain != "" && e.masqAtomic != nil {
+		e.masqAtomic.Set(redirectMasq(c.MasqDomain))
+	}
 	return nil
 }
 
@@ -375,10 +380,10 @@ func (e *edge) rebuildServer(ctx context.Context) error {
 		connForHcore = punchConn
 	}
 
-	masq := &atomicHandler{}
-	masq.Set(redirectMasq(cfg.Config.MasqDomain))
-
 	c := cfg.Config
+
+	e.masqAtomic = &atomicHandler{}
+	e.masqAtomic.Set(redirectMasq(c.MasqDomain))
 
 	hCfg := &hcore.Config{
 		TLSConfig: hcore.TLSConfig{
@@ -389,7 +394,7 @@ func (e *edge) rebuildServer(ctx context.Context) error {
 		Authenticator:        e.auth,
 		EventLogger:          e.auth,
 		TrafficLogger:        e.auth,
-		MasqHandler:          masq,
+		MasqHandler:          e.masqAtomic,
 		IgnoreClientBandwidth: c.IgnoreClientBandwidth,
 		DisableUDP:           c.DisableUDP,
 		QUICConfig: hcore.QUICConfig{
@@ -446,7 +451,7 @@ func (e *edge) rebuildServer(ctx context.Context) error {
 }
 
 func coldFingerprint(c control.ServerConfig) string {
-	return c.Listen + "|" + c.MasqDomain + "|" + c.CertSNI
+	return c.Listen + "|" + c.CertSNI
 }
 
 func (e *edge) serveDataPlane(ctx context.Context) {
@@ -507,7 +512,6 @@ func (e *edge) applyRealm(_ context.Context, p control.RealmPayload) error {
 	log.Printf("realm: config received, relay=%s realm=%s", p.RelayURL, p.RealmID)
 	e.stopRealm()
 
-	// If we don't have a PunchPacketConn yet, rebuild the server to create one
 	e.realmMu.Lock()
 	needRebuild := e.punchConn == nil
 	e.realmMu.Unlock()
