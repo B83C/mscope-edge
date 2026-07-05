@@ -12,8 +12,6 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/B83C/mscope-edge/pkg/control"
-
 	"github.com/apernet/hysteria/extras/v2/realm"
 )
 
@@ -23,7 +21,6 @@ type realmConfig struct {
 	Token      string
 	STUN       []string
 	StaticAddr string
-	DataListen string
 }
 
 func runRealmLoop(ctx context.Context, cfg realmConfig, punchConn *realm.PunchPacketConn, udpConn *net.UDPConn, edgeID string) {
@@ -255,18 +252,4 @@ func addrPortsToStrings(addrs []netip.AddrPort) []string {
 	return out
 }
 
-func addrToAddrPortFromUDP(listen string) netip.AddrPort {
-	host, portStr, err := net.SplitHostPort(listen)
-	if err != nil {
-		return netip.AddrPort{}
-	}
-	var port uint16
-	fmt.Sscanf(portStr, "%d", &port)
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		host = "127.0.0.1"
-	}
-	ip, _ := netip.ParseAddr(host)
-	return netip.AddrPortFrom(ip, port)
-}
 
-var _ = control.PinPayload{}

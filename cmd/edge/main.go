@@ -37,10 +37,9 @@ var centralPubB64 string
 
 func main() {
 	var (
-		centralAddr = flag.String("central-addr", "127.0.0.1:38472", "central server address to dial")
-		centralPub  = flag.String("central-pub", "", "path to central public key (PEM); overrides built-in key")
-		edgeID      = flag.String("edge-id", "", "edge identifier (default: hostname)")
-		dataListen  = flag.String("data-listen", "0.0.0.0:443", "hysteria data plane listen address")
+		centralAddr = flag.String("central-addr", "127.0.0.1:38472", "central server address")
+		centralPub  = flag.String("central-pub", "", "path to central public key; overrides built-in")
+		edgeID      = flag.String("edge-id", "", "edge name (default: hostname)")
 	)
 	flag.Parse()
 
@@ -81,7 +80,6 @@ func main() {
 	e := &edge{
 		centralPub: pub,
 		edgeID:     *edgeID,
-		dataListen: *dataListen,
 		vault:      certvault.New(),
 		cfgSrc:     configsource.New(),
 		auth:       auth.NewStore(),
@@ -94,7 +92,6 @@ func main() {
 type edge struct {
 	centralPub ed25519.PublicKey
 	edgeID     string
-	dataListen string
 
 	vault  *certvault.Vault
 	cfgSrc *configsource.Source
@@ -382,14 +379,10 @@ func (e *edge) rebuildServer(ctx context.Context) error {
 		return nil
 	}
 	cfg, ok := e.cfgSrc.Current()
-	if !ok {
+	if !ok || cfg.Config.Listen == "" {
 		return nil
 	}
-
-	listenAddr := e.dataListen
-	if cfg.Config.Listen != "" {
-		listenAddr = cfg.Config.Listen
-	}
+	listenAddr := cfg.Config.Listen
 	udpAddr, err := net.ResolveUDPAddr("udp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("resolve udp %q: %w", listenAddr, err)
@@ -533,7 +526,6 @@ func (e *edge) applyRealm(_ context.Context, p control.RealmPayload) error {
 		Token:      p.Token,
 		STUN:       p.STUN,
 		StaticAddr: p.StaticAddr,
-		DataListen: e.dataListen,
 	}
 	e.realmMu.Unlock()
 
