@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"mscope-hysteria/pkg/control"
+	"github.com/B83C/mscope-edge/pkg/control"
 )
 
 func testGrant(id, secret string) control.UserGrant {

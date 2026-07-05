@@ -12,7 +12,7 @@ import (
 	"net/url"
 	"time"
 
-	"mscope-hysteria/pkg/control"
+	"github.com/B83C/mscope-edge/pkg/control"
 
 	"github.com/apernet/hysteria/extras/v2/realm"
 )

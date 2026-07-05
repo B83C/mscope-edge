@@ -1,20 +1,15 @@
-module mscope-hysteria
+module github.com/B83C/mscope-edge
 
 go 1.26.4
 
 require (
-	github.com/a-h/templ v0.3.1020
 	github.com/apernet/hysteria/core/v2 v2.9.3
 	github.com/apernet/hysteria/extras/v2 v2.9.3
-	github.com/go-chi/chi/v5 v5.3.0
-	golang.org/x/crypto v0.51.0
-	turso.tech/database/tursogo v0.6.1
 )
 
 require (
 	github.com/apernet/quic-go v0.60.1-0.20260618182935-599b15a1fa26 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
-	github.com/ebitengine/purego v0.9.1 // indirect
 	github.com/google/gopacket v1.1.19 // indirect
 	github.com/huin/goupnp v1.2.0 // indirect
 	github.com/jackpal/go-nat-pmp v1.0.2 // indirect
@@ -29,8 +24,8 @@ require (
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
-	github.com/tursodatabase/turso-go-platform-libs v0.6.1 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
+	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842 // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect

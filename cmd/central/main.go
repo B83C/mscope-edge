@@ -15,8 +15,8 @@ import (
 	"syscall"
 	"time"
 
-	"mscope-hysteria/pkg/control"
-	"mscope-hysteria/pkg/central"
+	"github.com/B83C/mscope-edge/pkg/control"
+	"github.com/B83C/mscope-edge/pkg/central"
 )
 
 func main() {

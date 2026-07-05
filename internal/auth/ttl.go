@@ -10,7 +10,7 @@ import (
 	"time"
 
 	hcore "github.com/apernet/hysteria/core/v2/server"
-	"mscope-hysteria/pkg/control"
+	"github.com/B83C/mscope-edge/pkg/control"
 )
 
 type grant struct {

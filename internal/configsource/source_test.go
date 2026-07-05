@@ -3,7 +3,7 @@ package configsource
 import (
 	"testing"
 
-	"mscope-hysteria/pkg/control"
+	"github.com/B83C/mscope-edge/pkg/control"
 )
 
 func TestApplyConfig(t *testing.T) {

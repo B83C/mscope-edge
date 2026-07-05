@@ -12,7 +12,8 @@ COPY cmd/edge/ ./cmd/edge/
 COPY internal/ ./internal/
 COPY pkg/ ./pkg/
 RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
-    -ldflags="-s -w -trimpath -X main.centralPubB64=${CENTRAL_PUB_B64}" \
+    -trimpath \
+    -ldflags="-s -w -X main.centralPubB64=${CENTRAL_PUB_B64}" \
     -o /edge ./cmd/edge
 
 FROM alpine:3.21 AS runtime
