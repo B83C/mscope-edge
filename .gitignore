@@ -1,0 +1,16 @@
+# Build artifacts
+/bin/
+*.exe
+*.test
+*.out
+
+# Secrets (never commit)
+central.priv
+central.pub
+device.key
+device.crt
+users.json
+
+# Runtime
+*.log
+pin.json
