@@ -22,9 +22,12 @@ const (
 	MsgIdentify MessageType = "identify"
 	MsgAccept   MessageType = "accept"
 	MsgReject   MessageType = "reject"
-	MsgUpgrade  MessageType = "upgrade"
-	MsgAck      MessageType = "ack"
-	MsgError    MessageType = "error"
+	MsgUpgrade       MessageType = "upgrade"
+	MsgAuthRequest   MessageType = "auth_req"
+	MsgAuthResponse  MessageType = "auth_res"
+	MsgDisconnected  MessageType = "disconnected"
+	MsgAck           MessageType = "ack"
+	MsgError         MessageType = "error"
 )
 
 type Envelope struct {
@@ -176,4 +179,22 @@ type UpgradePayload struct {
 	SHA256      string `json:"sha256"`
 	Version     string `json:"version"`
 	Force       bool   `json:"force"`
+}
+
+type AuthRequestPayload struct {
+	RequestID string `json:"req_id"`
+	UserID    string `json:"user_id"`
+	Secret    string `json:"secret"`
+	Addr      string `json:"addr"`
+}
+
+type AuthResponsePayload struct {
+	RequestID string `json:"req_id"`
+	OK        bool   `json:"ok"`
+	UserID    string `json:"user_id"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+type DisconnectedPayload struct {
+	UserID string `json:"user_id"`
 }

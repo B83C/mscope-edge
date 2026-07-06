@@ -127,6 +127,9 @@ type edge struct {
 
 	centralMu     sync.Mutex
 	centralActive bool
+	authCh        *control.Channel // set when central connected, for proxied auth
+	authPending   sync.Map         // reqID → chan bool
+	authSeq       atomic.Uint64
 
 	realmMu     sync.Mutex
 	realmCancel context.CancelFunc
@@ -140,6 +143,58 @@ type edge struct {
 
 	readyCh chan struct{}
 	stopped chan struct{}
+}
+
+// centralAuth proxies auth requests to central over the control channel.
+// Falls back to local auth.Store if central is unreachable.
+type centralAuth struct {
+	edge *edge
+}
+
+func (a *centralAuth) Authenticate(addr net.Addr, auth string, tx uint64) (bool, string) {
+	ch := a.edge.authCh
+	if ch == nil {
+		return a.edge.auth.Authenticate(addr, auth, tx)
+	}
+
+	reqID := fmt.Sprintf("%d", a.edge.authSeq.Add(1))
+	resp := make(chan bool, 1)
+	a.edge.authPending.Store(reqID, resp)
+	defer a.edge.authPending.Delete(reqID)
+	defer close(resp)
+
+	err := ch.Send(control.MsgAuthRequest, control.AuthRequestPayload{
+		RequestID: reqID,
+		UserID:    splitAuth(auth),
+		Secret:    splitSecret(auth),
+		Addr:      addr.String(),
+	})
+	if err != nil {
+		return a.edge.auth.Authenticate(addr, auth, tx)
+	}
+
+	select {
+	case ok := <-resp:
+		return ok, splitAuth(auth)
+	case <-time.After(10 * time.Second):
+		return a.edge.auth.Authenticate(addr, auth, tx)
+	}
+}
+
+func splitAuth(auth string) string {
+	idx := strings.IndexByte(auth, ':')
+	if idx <= 0 {
+		return auth
+	}
+	return auth[:idx]
+}
+
+func splitSecret(auth string) string {
+	idx := strings.IndexByte(auth, ':')
+	if idx <= 0 || idx == len(auth)-1 {
+		return ""
+	}
+	return auth[idx+1:]
 }
 
 func (e *edge) run(ctx context.Context, centralAddr string) error {
@@ -293,11 +348,24 @@ func (e *edge) handleCentral(ctx context.Context, conn net.Conn) {
 		OnUpgrade: func(p control.UpgradePayload) error {
 			return e.applyUpgrade(ctx, p)
 		},
+		OnAuthResponse: func(p control.AuthResponsePayload) error {
+			if v, ok := e.authPending.Load(p.RequestID); ok {
+				v.(chan bool) <- p.OK
+			}
+			return nil
+		},
 		OnCentralGone: func() {
 			log.Printf("control: central gone, data plane and realm continue serving (cert=%s)",
 				e.vault.ExpiresAt().Format(time.RFC3339))
+			e.authCh = nil
 		},
 	}, e.edgeID)
+	e.authCh = ch
+	e.auth.OnDisconnect = func(id string) {
+		if ch := e.authCh; ch != nil {
+			ch.Send(control.MsgDisconnected, control.DisconnectedPayload{UserID: id})
+		}
+	}
 
 	go ch.Run(ctx)
 
@@ -456,7 +524,7 @@ func (e *edge) rebuildServer(ctx context.Context) error {
 		},
 		Conn:                  connForHcore,
 		Outbound:              &directOutbound{},
-		Authenticator:         e.auth,
+		Authenticator:         &centralAuth{edge: e},
 		EventLogger:           e.auth,
 		TrafficLogger:         e.auth,
 		MasqHandler:           e.masqAtomic,

@@ -35,6 +35,8 @@ type Store struct {
 
 	statsMu sync.RWMutex
 	stats   map[string]*userStats
+
+	OnDisconnect func(id string) // called when a session ends
 }
 
 func NewStore() *Store {

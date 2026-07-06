@@ -168,7 +168,7 @@ func handleEdge(ctx context.Context, conn net.Conn, priv ed25519.PrivateKey, cfg
 		return
 	}
 
-	log.Printf("edge %s identified: device=%s name=%s ip=%s", remote, edgeIdentity.DeviceID, edgeIdentity.Name, edgeIdentity.PublicIP)
+	log.Printf("edge %s identified: device=%s name=%s ips=%v", remote, edgeIdentity.DeviceID, edgeIdentity.Name, edgeIdentity.PublicIPs)
 
 	// Check whitelist
 	if len(whitelist) > 0 {

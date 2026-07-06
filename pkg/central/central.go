@@ -15,6 +15,7 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/B83C/mscope-edge/pkg/control"
@@ -129,7 +130,12 @@ type Server struct {
 	Pub      ed25519.PublicKey
 }
 
-func Dial(ctx context.Context, addr string, priv ed25519.PrivateKey) (*control.Channel, error) {
+type AuthHandler struct {
+	OnAuthReq func(control.AuthRequestPayload) (ok bool, id string)
+	OnDisconnected func(control.DisconnectedPayload)
+}
+
+func Dial(ctx context.Context, addr string, priv ed25519.PrivateKey, ah *AuthHandler) (*control.Channel, error) {
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
@@ -151,10 +157,72 @@ func Dial(ctx context.Context, addr string, priv ed25519.PrivateKey) (*control.C
 		return nil, fmt.Errorf("tls handshake: %w", err)
 	}
 
-	ch := control.NewChannel(tlsConn, control.Handlers{}, "central")
+	var ch *control.Channel
+	ch = control.NewChannel(tlsConn, control.Handlers{
+		OnAuthRequest: func(p control.AuthRequestPayload) error {
+			if ah != nil && ah.OnAuthReq != nil {
+				ok, id := ah.OnAuthReq(p)
+				return ch.Send(control.MsgAuthResponse, control.AuthResponsePayload{
+					RequestID: p.RequestID,
+					OK:        ok,
+					UserID:    id,
+				})
+			}
+			return nil
+		},
+		OnDisconnected: func(p control.DisconnectedPayload) error {
+			if ah != nil && ah.OnDisconnected != nil {
+				ah.OnDisconnected(p)
+			}
+			return nil
+		},
+	}, "central")
 	go ch.Run(ctx)
 
 	return ch, nil
+}
+
+// GlobalSessionStore tracks active sessions across all edges.
+// Embed in your webserver and pass to Dial.
+type GlobalSessionStore struct {
+	mu      sync.Mutex
+	Active  map[string]int          // userID → count
+	Grants  map[string]int          // userID → maxClients
+}
+
+func NewGlobalSessionStore() *GlobalSessionStore {
+	return &GlobalSessionStore{
+		Active: make(map[string]int),
+		Grants: make(map[string]int),
+	}
+}
+
+func (g *GlobalSessionStore) AddGrant(userID string, maxClients int) {
+	g.mu.Lock()
+	g.Grants[userID] = maxClients
+	g.mu.Unlock()
+}
+
+func (g *GlobalSessionStore) HandleAuthReq(p control.AuthRequestPayload) (bool, string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	maxC, hasGrant := g.Grants[p.UserID]
+	if !hasGrant {
+		return false, ""
+	}
+	if maxC > 0 && g.Active[p.UserID] >= maxC {
+		return false, ""
+	}
+	g.Active[p.UserID]++
+	return true, p.UserID
+}
+
+func (g *GlobalSessionStore) HandleDisconnected(p control.DisconnectedPayload) {
+	g.mu.Lock()
+	if g.Active[p.UserID] > 0 {
+		g.Active[p.UserID]--
+	}
+	g.mu.Unlock()
 }
 
 func PushHello(ch *control.Channel, id string) error {
