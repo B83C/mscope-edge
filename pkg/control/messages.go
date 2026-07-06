@@ -25,8 +25,9 @@ const (
 	MsgUpgrade       MessageType = "upgrade"
 	MsgAuthRequest   MessageType = "auth_req"
 	MsgAuthResponse  MessageType = "auth_res"
-	MsgDisconnected  MessageType = "disconnected"
-	MsgAck           MessageType = "ack"
+	MsgDisconnected   MessageType = "disconnected"
+	MsgTrafficReport  MessageType = "traffic"
+	MsgAck            MessageType = "ack"
 	MsgError         MessageType = "error"
 )
 
@@ -197,4 +198,16 @@ type AuthResponsePayload struct {
 
 type DisconnectedPayload struct {
 	UserID string `json:"user_id"`
+}
+
+type UserTraffic struct {
+	UserID string `json:"user_id"`
+	Tx     uint64 `json:"tx"`
+	Rx     uint64 `json:"rx"`
+	Online bool   `json:"online"`
+}
+
+type TrafficReportPayload struct {
+	Users  []UserTraffic `json:"users"`
+	Uptime int64         `json:"uptime"`
 }

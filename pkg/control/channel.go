@@ -27,8 +27,9 @@ type Handlers struct {
 	OnUpgrade      func(UpgradePayload) error
 	OnAuthRequest  func(AuthRequestPayload) error
 	OnAuthResponse func(AuthResponsePayload) error
-	OnDisconnected func(DisconnectedPayload) error
-	OnError        func(ErrorPayload) error
+	OnDisconnected   func(DisconnectedPayload) error
+	OnTrafficReport  func(TrafficReportPayload) error
+	OnError          func(ErrorPayload) error
 	OnCentralGone func()
 }
 
@@ -244,6 +245,15 @@ func (c *Channel) dispatch(env Envelope) error {
 		}
 		if c.handlers.OnDisconnected != nil {
 			return c.handlers.OnDisconnected(p)
+		}
+		return nil
+	case MsgTrafficReport:
+		var p TrafficReportPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return err
+		}
+		if c.handlers.OnTrafficReport != nil {
+			return c.handlers.OnTrafficReport(p)
 		}
 		return nil
 	default:

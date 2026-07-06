@@ -131,8 +131,9 @@ type Server struct {
 }
 
 type AuthHandler struct {
-	OnAuthReq func(control.AuthRequestPayload) (ok bool, id string)
-	OnDisconnected func(control.DisconnectedPayload)
+	OnAuthReq        func(control.AuthRequestPayload) (ok bool, id string)
+	OnDisconnected   func(control.DisconnectedPayload)
+	OnTrafficReport  func(control.TrafficReportPayload)
 }
 
 func Dial(ctx context.Context, addr string, priv ed25519.PrivateKey, ah *AuthHandler) (*control.Channel, error) {
@@ -173,6 +174,12 @@ func Dial(ctx context.Context, addr string, priv ed25519.PrivateKey, ah *AuthHan
 		OnDisconnected: func(p control.DisconnectedPayload) error {
 			if ah != nil && ah.OnDisconnected != nil {
 				ah.OnDisconnected(p)
+			}
+			return nil
+		},
+		OnTrafficReport: func(p control.TrafficReportPayload) error {
+			if ah != nil && ah.OnTrafficReport != nil {
+				ah.OnTrafficReport(p)
 			}
 			return nil
 		},
@@ -223,6 +230,43 @@ func (g *GlobalSessionStore) HandleDisconnected(p control.DisconnectedPayload) {
 		g.Active[p.UserID]--
 	}
 	g.mu.Unlock()
+}
+
+type CentralTrafficStore struct {
+	mu    sync.Mutex
+	Total map[string]struct{ Tx, Rx uint64 } // userID → cumulative
+}
+
+func NewCentralTrafficStore() *CentralTrafficStore {
+	return &CentralTrafficStore{Total: make(map[string]struct{ Tx, Rx uint64 })}
+}
+
+func (t *CentralTrafficStore) HandleTrafficReport(p control.TrafficReportPayload) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, u := range p.Users {
+		existing := t.Total[u.UserID]
+		existing.Tx += u.Tx
+		existing.Rx += u.Rx
+		t.Total[u.UserID] = existing
+	}
+}
+
+func (t *CentralTrafficStore) Get(userID string) (tx, rx uint64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	s := t.Total[userID]
+	return s.Tx, s.Rx
+}
+
+func (t *CentralTrafficStore) GetAll() map[string]struct{ Tx, Rx uint64 } {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make(map[string]struct{ Tx, Rx uint64 }, len(t.Total))
+	for k, v := range t.Total {
+		out[k] = v
+	}
+	return out
 }
 
 func PushHello(ch *control.Channel, id string) error {

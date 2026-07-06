@@ -361,6 +361,8 @@ func (e *edge) handleCentral(ctx context.Context, conn net.Conn) {
 		},
 	}, e.edgeID)
 	e.authCh = ch
+	go e.trafficReportLoop(ctx, ch)
+
 	e.auth.OnDisconnect = func(id string) {
 		if ch := e.authCh; ch != nil {
 			ch.Send(control.MsgDisconnected, control.DisconnectedPayload{UserID: id})
@@ -613,6 +615,31 @@ func (e *edge) serveDataPlane(ctx context.Context) {
 		e.mu.Lock()
 		e.srvReady = false
 		e.mu.Unlock()
+	}
+}
+
+func (e *edge) trafficReportLoop(ctx context.Context, ch *control.Channel) {
+	t := time.NewTicker(60 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		stats := e.auth.AllStats()
+		users := make([]control.UserTraffic, 0, len(stats))
+		for id, st := range stats {
+			if st.Tx > 0 || st.Rx > 0 {
+				users = append(users, control.UserTraffic{
+					UserID: id, Tx: st.Tx, Rx: st.Rx, Online: st.Online,
+				})
+			}
+		}
+		if len(users) == 0 {
+			continue
+		}
+		ch.Send(control.MsgTrafficReport, control.TrafficReportPayload{Users: users})
 	}
 }
 
