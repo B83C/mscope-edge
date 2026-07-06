@@ -18,19 +18,21 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
-	hcore "github.com/apernet/hysteria/core/v2/server"
-	"github.com/apernet/hysteria/extras/v2/outbounds/speedtest"
-	"github.com/apernet/hysteria/extras/v2/realm"
 	"github.com/B83C/mscope-edge/internal/auth"
 	"github.com/B83C/mscope-edge/internal/certvault"
 	"github.com/B83C/mscope-edge/internal/configsource"
 	"github.com/B83C/mscope-edge/pkg/control"
+	hcore "github.com/apernet/hysteria/core/v2/server"
+	"github.com/apernet/hysteria/extras/v2/outbounds/speedtest"
+	"github.com/apernet/hysteria/extras/v2/realm"
+	// "github.com/go-logr/logr/funcr"
 )
 
 // Set at build time via -ldflags -X main.centralPubB64=<base64>
@@ -86,6 +88,21 @@ func main() {
 		cfgSrc:     configsource.New(),
 		auth:       auth.NewStore(),
 	}
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGINT)
+
+	go func() {
+		<-sigChan
+		fmt.Println("\n CTRL+C detected")
+
+		buf := make([]byte, 1<<20)
+		stackSize := runtime.Stack(buf, true)
+
+		fmt.Printf("%s \n", buf[:stackSize])
+		os.Exit(1)
+	}()
+
 	if err := e.run(ctx, *centralAddr); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatalf("edge: %v", err)
 	}
@@ -105,8 +122,8 @@ type edge struct {
 	srvReady bool
 	lastCold string
 
-	udpConn    *net.UDPConn
-	punchConn  *realm.PunchPacketConn
+	udpConn   *net.UDPConn
+	punchConn *realm.PunchPacketConn
 
 	centralMu     sync.Mutex
 	centralActive bool
@@ -421,14 +438,14 @@ func (e *edge) rebuildServer(ctx context.Context) error {
 		TLSConfig: hcore.TLSConfig{
 			GetCertificate: e.vault.GetCertificate,
 		},
-		Conn:                 connForHcore,
-		Outbound:             &directOutbound{},
-		Authenticator:        e.auth,
-		EventLogger:          e.auth,
-		TrafficLogger:        e.auth,
-		MasqHandler:          e.masqAtomic,
+		Conn:                  connForHcore,
+		Outbound:              &directOutbound{},
+		Authenticator:         e.auth,
+		EventLogger:           e.auth,
+		TrafficLogger:         e.auth,
+		MasqHandler:           e.masqAtomic,
 		IgnoreClientBandwidth: c.IgnoreClientBandwidth,
-		DisableUDP:           c.DisableUDP,
+		DisableUDP:            c.DisableUDP,
 		QUICConfig: hcore.QUICConfig{
 			InitialStreamReceiveWindow:     maybe(c.QUICStreamRcvWin, 8388608),
 			MaxStreamReceiveWindow:         maybe(c.QUICMaxStreamRcvWin, 8388608),
@@ -765,6 +782,81 @@ func (e *edge) netInfo() (publicIP, localIP string, isPrivate bool) {
 		return e.publicIP, e.localIP, e.isPrivate
 	}
 	return discoverNetworkInfo()
+}
+
+func createIPClient(networkType string) *http.Client {
+	return &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
+				dialer := &net.Dialer{Timeout: 5 * time.Second}
+				return dialer.DialContext(ctx, networkType, addr)
+			},
+		},
+	}
+}
+
+// isAccessibleIPv4 returns true if the IP is a globally routable,
+// public address that can accept direct incoming traffic from the internet.
+func isAccessibleIPv4(ipStr string) bool {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+	ipv4 := ip.To4()
+	if ipv4 == nil {
+		return false // Not a valid IPv4
+	}
+
+	// 1. Standard Private Network Ranges (RFC 1918)
+	if ipv4[0] == 10 ||
+		(ipv4[0] == 172 && ipv4[1] >= 16 && ipv4[1] <= 31) ||
+		(ipv4[0] == 192 && ipv4[1] == 168) {
+		return false
+	}
+
+	// 2. Carrier-Grade NAT / CGNAT (RFC 6598: 100.64.0.0/10)
+	if ipv4[0] == 100 && (ipv4[1] >= 64 && ipv4[1] <= 127) {
+		return false
+	}
+
+	// 3. Local Loopback (127.0.0.0/8)
+	if ipv4[0] == 127 {
+		return false
+	}
+
+	// 4. Link-Local / Autoconfiguration (RFC 3927: 169.254.0.0/10)
+	if ipv4[0] == 169 && ipv4[1] == 254 {
+		return false
+	}
+
+	// If it passes all exclusions, it is an internet-accessible public IP
+	return true
+}
+
+func discoverIPs() (ipv4 string, ipv6 string, isIPv4Accessible bool) {
+	// Fetch IPv4
+	clientV4 := createIPClient("tcp4")
+	resp, err := clientV4.Get("https://ipify.org")
+	if err == nil && resp.StatusCode == http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		ipv4 = strings.TrimSpace(string(b))
+	}
+
+	// Fetch IPv6
+	clientV6 := createIPClient("tcp6")
+	resp, err = clientV6.Get("https://ipinfo.io")
+	if err == nil && resp.StatusCode == http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		ipv6 = strings.TrimSpace(string(b))
+	}
+
+	// Evaluate accessibility
+	isIPv4Accessible = isAccessibleIPv4(ipv4)
+
+	return ipv4, ipv6, isIPv4Accessible
 }
 
 func discoverNetworkInfo() (publicIP, localIP string, isPrivate bool) {
