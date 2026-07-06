@@ -134,9 +134,9 @@ type edge struct {
 
 	masqAtomic *atomicHandler
 
-	publicIP  string
-	localIP   string
 	isPrivate bool
+	publicIPs []string
+	localIPs  []string
 
 	readyCh chan struct{}
 	stopped chan struct{}
@@ -148,11 +148,19 @@ func (e *edge) run(ctx context.Context, centralAddr string) error {
 
 	go e.serveDataPlane(ctx)
 
+	// On shutdown: close server so serveDataPlane exits, then stopped fires
+	go func() {
+		<-ctx.Done()
+		e.mu.Lock()
+		e.shutdownServerLocked()
+		e.mu.Unlock()
+	}()
+
 	log.Printf("control: dialing central at %s, edge id %s", centralAddr, e.edgeID)
 
-	// Discover public IP once at startup
-	e.publicIP, e.localIP, e.isPrivate = discoverNetworkInfo()
-	log.Printf("network: public=%s local=%s private=%v", e.publicIP, e.localIP, e.isPrivate)
+	// Discover network info once at startup
+	e.publicIPs, e.localIPs, e.isPrivate = discoverNetworkInfo()
+	log.Printf("network: public=%v local=%v private=%v", e.publicIPs, e.localIPs, e.isPrivate)
 
 	for {
 		if ctx.Err() != nil {
@@ -294,15 +302,23 @@ func (e *edge) handleCentral(ctx context.Context, conn net.Conn) {
 	go ch.Run(ctx)
 
 	// Identify: send hardware ID + network info, wait for central verdict
-	publicIP, localIP, isPrivate := e.netInfo()
-	ch.Send(control.MsgIdentify, control.IdentifyPayload{
-		DeviceID:  deviceID(),
-		Name:      e.edgeID,
-		PublicIP:  publicIP,
-		LocalIP:   localIP,
-		IsPrivate: isPrivate,
-		Version:   1,
-	})
+	pubIPs, locIPs, isPrivate := e.netInfo()
+	ident := control.IdentifyPayload{
+		DeviceID:   deviceID(),
+		Name:       e.edgeID,
+		PublicIPs:  pubIPs,
+		LocalIPs:   locIPs,
+		IsPrivate:  isPrivate,
+		Version:    1,
+	}
+	for _, ip := range pubIPs {
+		if net.ParseIP(ip).To4() != nil {
+			ident.PublicIPv4 = ip
+		} else {
+			ident.PublicIPv6 = ip
+		}
+	}
+	ch.Send(control.MsgIdentify, ident)
 
 	select {
 	case err := <-identCh:
@@ -777,9 +793,9 @@ func parseDuration(s string, def time.Duration) time.Duration {
 	return d
 }
 
-func (e *edge) netInfo() (publicIP, localIP string, isPrivate bool) {
-	if e.publicIP != "" {
-		return e.publicIP, e.localIP, e.isPrivate
+func (e *edge) netInfo() ([]string, []string, bool) {
+	if len(e.publicIPs) > 0 {
+		return e.publicIPs, e.localIPs, e.isPrivate
 	}
 	return discoverNetworkInfo()
 }
@@ -859,35 +875,62 @@ func discoverIPs() (ipv4 string, ipv6 string, isIPv4Accessible bool) {
 	return ipv4, ipv6, isIPv4Accessible
 }
 
-func discoverNetworkInfo() (publicIP, localIP string, isPrivate bool) {
-	// Get local IP from default route
+func discoverNetworkInfo() (publicIPs, localIPs []string, isPrivate bool) {
+	// Collect all local IPs (IPv4 + IPv6, non-loopback)
 	if addrs, err := net.InterfaceAddrs(); err == nil {
 		for _, a := range addrs {
-			if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() && ipnet.IP.To4() != nil {
-				localIP = ipnet.IP.String()
-				break
+			if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+				localIPs = append(localIPs, ipnet.IP.String())
 			}
 		}
 	}
 
-	// Discover public IP via HTTP API
+	// Discover public IPv4
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("https://ifconfig.me/ip")
+	resp, err := client.Get("https://api.ipify.org")
 	if err == nil && resp.StatusCode == 200 {
 		b, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		publicIP = strings.TrimSpace(string(b))
-	}
-	if publicIP == "" {
-		resp, err = client.Get("https://api.ipify.org")
+		v4 := strings.TrimSpace(string(b))
+		if v4 != "" {
+			publicIPs = append(publicIPs, v4)
+		}
+	} else {
+		// Fallback: ifconfig.me returns whichever it sees
+		resp, err = client.Get("https://ifconfig.me/ip")
 		if err == nil && resp.StatusCode == 200 {
 			b, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			publicIP = strings.TrimSpace(string(b))
+			ip := strings.TrimSpace(string(b))
+			if ip != "" && len(publicIPs) == 0 {
+				publicIPs = append(publicIPs, ip)
+			}
 		}
 	}
 
-	isPrivate = isPrivateIP(publicIP) || isPrivateIP(localIP)
+	// Discover public IPv6
+	resp, err = client.Get("https://api6.ipify.org")
+	if err == nil && resp.StatusCode == 200 {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		v6 := strings.TrimSpace(string(b))
+		if v6 != "" {
+			publicIPs = append(publicIPs, v6)
+		}
+	}
+
+	// Determine NAT status
+	for _, ip := range publicIPs {
+		if isPrivateIP(ip) {
+			isPrivate = true
+		}
+	}
+	for _, ip := range localIPs {
+		if isPrivateIP(ip) {
+			isPrivate = true
+		}
+	}
+
 	return
 }
 
