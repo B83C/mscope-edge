@@ -18,7 +18,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -88,20 +87,6 @@ func main() {
 		cfgSrc:     configsource.New(),
 		auth:       auth.NewStore(),
 	}
-
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGINT)
-
-	go func() {
-		<-sigChan
-		fmt.Println("\n CTRL+C detected")
-
-		buf := make([]byte, 1<<20)
-		stackSize := runtime.Stack(buf, true)
-
-		fmt.Printf("%s \n", buf[:stackSize])
-		os.Exit(1)
-	}()
 
 	if err := e.run(ctx, *centralAddr); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatalf("edge: %v", err)
