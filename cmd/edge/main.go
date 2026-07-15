@@ -356,6 +356,15 @@ func (e *edge) handleCentral(ctx context.Context, conn net.Conn) {
 
 	go ch.Run(ctx)
 
+	// Unblock recvLoop on Ctrl+C: close channel when ctx cancels
+	go func() {
+		select {
+		case <-ctx.Done():
+			ch.Close()
+		case <-ch.Done():
+		}
+	}()
+
 	// Identify: send hardware ID + network info, wait for central verdict
 	pubIPs, locIPs, isPrivate := e.netInfo()
 	ident := control.IdentifyPayload{
