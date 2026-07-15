@@ -1,3 +1,7 @@
+# mscope-edge
+
+Hysteria2 VPN edge node with central control channel. Edge connects to central via TCP, gets config + TLS cert + user grants, and starts serving Hysteria2/QUIC on the configured UDP port. A TCP masquerade listener runs on the same port for port scan camouflage.
+
 ## Auth flow
 
 ```
@@ -7,160 +11,94 @@ edge                              central
  │  ◄── {ts, sig(challenge||ts)} ── │   central proves identity
  │   verify sig(centralPub)         │
  │  ◄── TLS 1.3 (pinned cert) ──── │   encrypted channel
- │  {device_id, name, ip} ─────────►│   edge identifies itself
+ │  {device_id, name, ips} ────────►│   edge identifies itself
  │                                  │
- │  ◄── MsgAccept / MsgReject ──── │   central checks whitelist
+ │  ◄── MsgAccept / MsgReject ──── │   central checks auth
  │  ◄── MsgHello ───────────────── │
- │  ◄── MsgConfig ──────────────── │
- │  ◄── MsgCert ────────────────── │
- │  ◄── MsgGrants ──────────────── │
- │  ◄── MsgRealm ───────────────── │
+ │  ◄── MsgConfig ──────────────── │   QUIC tuning, port, masq domain
+ │  ◄── MsgCert ────────────────── │   TLS cert + pinSHA256
+ │  ◄── MsgGrants ──────────────── │   user credentials
+ │  ◄── MsgRealm ───────────────── │   NAT punch relay config
 ```
 
-- **Edge verifies central**: using the baked-in `central.pub` (Ed25519 challenge-response)
-- **Central verifies edge**: by checking `device_id` against the whitelist (`-whitelist-file`)
-- Device ID is hardware-bound (`/etc/machine-id`, persistent across reboots)
+- **Edge verifies central**: Ed25519 challenge-response using baked-in `centralPubB64`
+- **Central verifies edge**: by checking `hysteria_token` in DB, plan, allowlist
+- Device ID from `/etc/machine-id` (persistent across reboots)
 
-## Build
-
-### 1. Generate a keypair (one time)
+## Quick deploy (ARM64 edge)
 
 ```sh
-go run ./cmd/central -gen-key
-# Outputs: PUBKEY_B64=<base64 of the raw 32-byte public key>
-#
-# Writes: central.priv  (keep this — your webserver uses it to sign)
-#         certs/central.pub
+cd mscope-hysteria
+GOOS=linux GOARCH=arm64 go build \
+  -ldflags="-X main.centralPubB64=YOUR_BASE64_PUBKEY" \
+  -o /tmp/edge-arm64 ./cmd/edge/
+
+scp -i pulumi /tmp/edge-arm64 ubuntu@sg0-1.b83c.eu.org:/tmp/bin/edge
+ssh -i pulumi ubuntu@sg0-1.b83c.eu.org '
+  pkill -f edge; sleep 1
+  nohup /tmp/bin/edge -central-addr 47.100.197.29:38472 > /tmp/edge.log 2>&1 &
+'
 ```
 
-### 2. Build the edge with the key baked in
+## Local dev with mock central
 
 ```sh
-B64=$(go run ./cmd/central -gen-key 2>&1 | grep PUBKEY_B64 | sed 's/PUBKEY_B64=//')
-
-go build \
-  -ldflags="-X main.centralPubB64=$B64" \
-  -o edge ./cmd/edge
+go build -o /tmp/mock-central ./cmd/mock-central/     # starts on :38473
+/tmp/mock-central &
+PUBKEY=$(grep "central pub key" /tmp/mc.log | awk '{print $NF}')
+go build -ldflags="-X main.centralPubB64=$PUBKEY" -o /tmp/edge ./cmd/edge/
+/tmp/edge -central-addr :38473
 ```
 
-The resulting `edge` binary has the central's public key embedded. It will **only connect to a central that holds the matching private key**. This prevents rogue servers from impersonating your central.
-
-### 3. Run central (on your public server)
+Mock central auto-approves, pushes config + cert + grants, and the edge starts serving on `0.0.0.0:8445`. Test with:
 
 ```sh
-./central \
-  -listen 0.0.0.0:38472 \
-  -priv central.priv \
-  -users-file users.json \
-  -whitelist-file whitelist.json
+hysteria client -c /tmp/hy.yaml   # socks5 on :1080
+curl --socks5-hostname 127.0.0.1:1080 https://example.com
 ```
 
-Central listens on TCP 38472. Multiple edges can connect.
+## Edge flags
 
-### 4. Run edge (on your home network)
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-central-addr` | `127.0.0.1:38472` | Central address to dial |
+| `-central-pub` | `""` | Override baked-in key (PEM file) |
+| `-edge-id` | hostname | Edge name sent in identify |
 
-```sh
-./edge -central-addr central.example.com:38472 -data-listen 0.0.0.0:443
+## What the edge does
+
+1. Dial central TCP → Ed25519 handshake → TLS 1.3
+2. Send `IdentifyPayload` (device_id, name, public/local IPs)
+3. Receive `MsgAccept` → wait for config + cert + grants
+4. Build Hysteria2 server on the configured UDP port
+5. Start **TCP masquerade listener** on the same port (HTTP reverse proxy to masq domain)
+6. Report `status:running:PORT` back to central
+7. Proxy auth requests to central via control channel
+8. Report traffic every 60s
+9. On Ctrl+C: close channel immediately (no 60s hang)
+
+## TCP masquerade
+
+The edge listens on the same port via **TCP** (alongside Hysteria UDP). Any TCP connection receives an HTTP reverse-proxy response from the masq domain, logging each hit:
+
+```
+masq: GET / from 1.2.3.4:56789
 ```
 
-That's it. No `-central-pub` flag. The key is baked in. The edge connects, proves central's identity, sends its hardware ID, gets config/cert/grants, and starts serving.
-
-## Web server integration
-
-Your dashboard server imports `pkg/central` to push configs to edges:
-
-```go
-import "github.com/B83C/mscope-edge/pkg/central"
-
-// Load the private key (from central.priv, generated in step 1)
-priv, _ := central.LoadKeypair("central.priv")
-
-// Connect to an edge and push config
-ch, _ := central.Dial(ctx, "edge-ip:38472", priv)
-
-central.PushHello(ch, "my-dashboard")
-central.PushConfig(ch, serverCfg)          // QUIC tuning, UDP, masq, etc.
-central.PushGrants(ch, grantsPayload)       // user credentials
-pin, _ := central.PushCert(ch, sni, 24*time.Hour)  // self-signed TLS cert
-central.PushRealm(ch, realmPayload)          // NAT punching config
-```
-
-The `central.Dial()` call:
-1. Accepts the edge's Ed25519 challenge (proves central's identity using `central.priv`)
-2. Establishes TLS using the same key
-3. Receives the edge's `MsgIdentify` (device_id, name, IP)
-4. Returns `*control.Channel` for further pushes
-
-You can log the edge identity and decide whether to proceed:
-
-```go
-ch, _ := central.Dial(ctx, edgeAddr, priv)
-// ch has already received MsgIdentify from the edge
-// Log it or check whitelist in your DB
-```
-
-## Edge identity & whitelist
-
-The edge identifies itself with:
-- **device_id**: from `/etc/machine-id` (hardware-bound, persistent)
-- **name**: the `-edge-id` flag (defaults to hostname)
-- **public_ip**: the IP address central sees the connection from
-
-Whitelist file (JSON array of device IDs):
-
-```json
-["d30ca57ef1304aeb98141d26535c146d"]
-```
-
-```sh
-./central -whitelist-file /path/to/whitelist.json
-```
-
-If omitted, all edges are accepted. The device ID is always logged so you can populate the whitelist later from your database.
+This hides the Hysteria server from TCP port scans.
 
 ## Docker
 
 Build with your key baked in:
 
 ```sh
-B64=$(go run ./cmd/central -gen-key 2>&1 | grep PUBKEY_B64 | sed 's/PUBKEY_B64=//')
-
-docker build \
-  --build-arg CENTRAL_PUB_B64="$B64" \
-  -t mscope-edge .
+docker build --build-arg CENTRAL_PUB_B64="$B64" -t mscope-edge .
 ```
 
-Or pull from GHCR (if you've set the `CENTRAL_PUB_B64` secret):
+Or pull from GHCR (requires `CENTRAL_PUB_B64` secret):
 
 ```sh
 docker run -d --name mscope-edge \
-  -p 443:443/udp \
   ghcr.io/B83C/mscope-edge:latest \
-  -central-addr central.example.com:38472 \
-  -data-listen 0.0.0.0:443
+  -central-addr central.example.com:38472
 ```
-
-Multi-arch: amd64, arm64, arm/v7. Auto-built on push to `main` if `CENTRAL_PUB_B64` secret is set in the repo.
-
-## Central flags
-
-| Flag | Default | Description |
-|---|---|---|
-| `-listen` | `0.0.0.0:38472` | TCP listen for edges |
-| `-priv` | `central.priv` | Ed25519 private key |
-| `-users-file` | — | JSON grants file |
-| `-whitelist-file` | — | JSON device ID whitelist |
-| `-server-listen` | `0.0.0.0:443` | Data plane port pushed to edges |
-| `-masq` | `https://example.com` | Masquerade URL |
-| `-disable-udp` | `false` | Disable UDP |
-| `-congestion` | `""` | Congestion: `bbr` or empty |
-| `-realm-*` | — | Realm relay config |
-
-## Edge flags
-
-| Flag | Default | Description |
-|---|---|---|
-| `-central-addr` | `127.0.0.1:38472` | Central address to dial |
-| `-data-listen` | `0.0.0.0:443` | UDP data plane port |
-| `-central-pub` | `""` | Override baked-in key (PEM file path) |
-| `-edge-id` | hostname | Edge name sent during identification |
