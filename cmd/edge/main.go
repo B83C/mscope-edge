@@ -31,7 +31,8 @@ import (
 	hcore "github.com/apernet/hysteria/core/v2/server"
 	"github.com/apernet/hysteria/extras/v2/outbounds/speedtest"
 	"github.com/apernet/hysteria/extras/v2/realm"
-	// "github.com/go-logr/logr/funcr"
+	"net/http/httputil"
+	"net/url"
 )
 
 // Set at build time via -ldflags -X main.centralPubB64=<base64>
@@ -109,6 +110,9 @@ type edge struct {
 
 	udpConn   *net.UDPConn
 	punchConn *realm.PunchPacketConn
+
+	tcpListener net.Listener
+	tcpServer   *http.Server
 
 	centralMu     sync.Mutex
 	centralActive bool
@@ -471,7 +475,7 @@ func (e *edge) applyHotConfig(c control.ServerConfig) error {
 		e.hCfg.UDPIdleTimeout = time.Duration(c.UDPIdleSecs) * time.Second
 	}
 	if c.MasqDomain != "" && e.masqAtomic != nil {
-		e.masqAtomic.Set(redirectMasq(c.MasqDomain))
+		e.masqAtomic.Set(masqHandler(c.MasqDomain))
 	}
 	return nil
 }
@@ -512,7 +516,7 @@ func (e *edge) rebuildServer(ctx context.Context) error {
 	c := cfg.Config
 
 	e.masqAtomic = &atomicHandler{}
-	e.masqAtomic.Set(redirectMasq(c.MasqDomain))
+	e.masqAtomic.Set(masqHandler(c.MasqDomain))
 
 	hCfg := &hcore.Config{
 		TLSConfig: hcore.TLSConfig{
@@ -574,6 +578,19 @@ func (e *edge) rebuildServer(ctx context.Context) error {
 		default:
 		}
 	}
+	// Start TCP masquerade listener (after shutdownServerLocked so it won't be closed)
+	if e.tcpListener == nil && c.MasqDomain != "" {
+		tcpAddr, err := net.ResolveTCPAddr("tcp", listenAddr)
+		if err == nil {
+			tcpLn, err := net.ListenTCP("tcp", tcpAddr)
+			if err == nil {
+				e.tcpListener = tcpLn
+				go e.serveMasqTCP(ctx, tcpLn, c.MasqDomain)
+				log.Printf("data: tcp masq on %s -> %s", listenAddr, c.MasqDomain)
+			}
+		}
+	}
+
 	log.Printf("data: server (re)built, cert expires %s, masq=%s, tcpmbps=%d",
 		e.vault.ExpiresAt().Format(time.RFC3339), cfg.Config.MasqDomain, cfg.Config.TCPMbps)
 	// Notify central that server is running
@@ -649,6 +666,14 @@ func (e *edge) shutdownServerLocked() {
 		e.srv.Close()
 		e.srv = nil
 		e.hCfg = nil
+	}
+	if e.tcpListener != nil {
+		e.tcpListener.Close()
+		e.tcpListener = nil
+	}
+	if e.tcpServer != nil {
+		e.tcpServer.Close()
+		e.tcpServer = nil
 	}
 }
 
@@ -851,16 +876,38 @@ func (a *atomicHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "masq not configured", http.StatusServiceUnavailable)
 }
 
-func redirectMasq(target string) http.Handler {
+func masqHandler(target string) http.Handler {
 	if target == "" {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "not found", http.StatusNotFound)
 		})
 	}
+	targetURL := "http://" + strings.TrimPrefix(target, "http://")
+	targetURL = strings.TrimSuffix(targetURL, "/")
+	u, err := url.Parse(targetURL)
+	if err != nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+		})
+	}
+	rp := httputil.NewSingleHostReverseProxy(u)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Location", target)
-		w.WriteHeader(http.StatusFound)
+		log.Printf("masq: %s %s from %s", r.Method, r.URL, r.RemoteAddr)
+		r.Host = u.Host
+		rp.ServeHTTP(w, r)
 	})
+}
+
+func (e *edge) serveMasqTCP(ctx context.Context, ln net.Listener, domain string) {
+	mux := http.NewServeMux()
+	mux.Handle("/", masqHandler(domain))
+	srv := &http.Server{Handler: mux}
+	e.mu.Lock()
+	e.tcpServer = srv
+	e.mu.Unlock()
+	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+		log.Printf("data: tcp masq serve error: %v", err)
+	}
 }
 
 func splitHost(addr string) string {
