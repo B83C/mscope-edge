@@ -576,6 +576,13 @@ func (e *edge) rebuildServer(ctx context.Context) error {
 	}
 	log.Printf("data: server (re)built, cert expires %s, masq=%s, tcpmbps=%d",
 		e.vault.ExpiresAt().Format(time.RFC3339), cfg.Config.MasqDomain, cfg.Config.TCPMbps)
+	// Notify central that server is running
+	if ch := e.authCh; ch != nil {
+		ch.Send(control.MsgError, control.ErrorPayload{
+			Code:    "status",
+			Message: "running:" + listenAddr,
+		})
+	}
 	return nil
 }
 
