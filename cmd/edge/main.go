@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
@@ -16,6 +18,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -31,8 +35,6 @@ import (
 	hcore "github.com/apernet/hysteria/core/v2/server"
 	"github.com/apernet/hysteria/extras/v2/outbounds/speedtest"
 	"github.com/apernet/hysteria/extras/v2/realm"
-	"net/http/httputil"
-	"net/url"
 )
 
 // Set at build time via -ldflags -X main.centralPubB64=<base64>
@@ -44,6 +46,7 @@ func main() {
 		centralAddr = flag.String("central-addr", "127.0.0.1:38472", "central server address")
 		centralPub  = flag.String("central-pub", "", "path to central public key; overrides built-in")
 		edgeID      = flag.String("edge-id", "", "edge name (default: hostname)")
+		workerURL   = flag.String("worker-url", "", "Cloudflare Worker URL (disables TCP central)")
 	)
 	flag.Parse()
 
@@ -87,6 +90,12 @@ func main() {
 		vault:      certvault.New(),
 		cfgSrc:     configsource.New(),
 		auth:       auth.NewStore(),
+		workerURL:  *workerURL,
+	}
+	if *workerURL != "" {
+		log.Printf("worker: using Cloudflare Worker at %s", *workerURL)
+		// Device ID is needed for worker API calls
+		e.workerDeviceID = deviceID()
 	}
 
 	if err := e.run(ctx, *centralAddr); err != nil && !errors.Is(err, context.Canceled) {
@@ -119,6 +128,9 @@ type edge struct {
 	authCh        *control.Channel // set when central connected, for proxied auth
 	authPending   sync.Map         // reqID → chan bool
 	authSeq       atomic.Uint64
+
+	workerURL       string
+	workerDeviceID  string
 
 	realmMu     sync.Mutex
 	realmCancel context.CancelFunc
@@ -200,11 +212,24 @@ func (e *edge) run(ctx context.Context, centralAddr string) error {
 		e.mu.Unlock()
 	}()
 
-	log.Printf("control: dialing central at %s, edge id %s", centralAddr, e.edgeID)
-
 	// Discover network info once at startup
 	e.publicIPs, e.localIPs, e.isPrivate = discoverNetworkInfo()
 	log.Printf("network: public=%v local=%v private=%v", e.publicIPs, e.localIPs, e.isPrivate)
+
+	// Cloudflare Worker mode: no TCP central
+	if e.workerURL != "" {
+		log.Printf("worker: bootstrapping from %s", e.workerURL)
+		if err := e.bootstrapFromWorker(ctx); err != nil {
+			log.Printf("worker: bootstrap error: %v", err)
+		}
+		go e.workerPollLoop(ctx)
+		go e.sessionReportLoop(ctx)
+		<-ctx.Done()
+		<-e.stopped
+		return ctx.Err()
+	}
+
+	log.Printf("control: dialing central at %s, edge id %s", centralAddr, e.edgeID)
 
 	for {
 		if ctx.Err() != nil {
@@ -934,6 +959,115 @@ func parseDuration(s string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+// --- Cloudflare Worker mode ---
+
+func (e *edge) bootstrapFromWorker(ctx context.Context) error {
+	resp, err := http.Get(e.workerURL + "/edge/" + e.workerDeviceID)
+	if err != nil {
+		return fmt.Errorf("worker GET: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("worker status %d", resp.StatusCode)
+	}
+	var data struct {
+		Config *control.ServerConfig `json:"config"`
+		Cert   *struct {
+			DER string `json:"der"`
+			Key string `json:"key"`
+			Pin string `json:"pin"`
+		} `json:"cert"`
+		Grants []control.UserGrant `json:"grants"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return fmt.Errorf("decode: %w", err)
+	}
+	if data.Config != nil {
+		cp := control.ConfigPayload{Version: 1, Config: *data.Config}
+		if err := e.cfgSrc.Apply(cp); err == nil {
+			e.maybeBuildServer(ctx)
+		}
+	}
+	if data.Cert != nil && data.Cert.DER != "" {
+		certDER, _ := base64.StdEncoding.DecodeString(data.Cert.DER)
+		keyDER, _ := base64.StdEncoding.DecodeString(data.Cert.Key)
+		if len(certDER) > 0 && len(keyDER) > 0 {
+			e.vault.InstallFromDER(certDER, keyDER)
+			e.maybeBuildServer(ctx)
+		}
+	}
+	if len(data.Grants) > 0 {
+		e.auth.Apply(control.GrantsPayload{
+			Version: uint64(time.Now().Unix()),
+			Grants:  data.Grants,
+		})
+	}
+	log.Printf("worker: bootstrap done config=%v cert=%v grants=%d",
+		data.Config != nil, data.Cert != nil && data.Cert.DER != "", len(data.Grants))
+	return nil
+}
+
+func (e *edge) workerPollLoop(ctx context.Context) {
+	t := time.NewTicker(60 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		resp, err := http.Get(e.workerURL + "/edge/" + e.workerDeviceID)
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode == 200 {
+			var data struct {
+				Config *control.ServerConfig `json:"config"`
+				Grants []control.UserGrant   `json:"grants"`
+			}
+			json.NewDecoder(resp.Body).Decode(&data)
+			resp.Body.Close()
+			if data.Config != nil {
+				e.cfgSrc.Apply(control.ConfigPayload{Version: 1, Config: *data.Config})
+				e.maybeBuildServer(ctx)
+			}
+			if len(data.Grants) > 0 {
+				e.auth.Apply(control.GrantsPayload{
+					Version: uint64(time.Now().Unix()), Grants: data.Grants,
+				})
+			}
+		} else {
+			resp.Body.Close()
+		}
+	}
+}
+
+func (e *edge) sessionReportLoop(ctx context.Context) {
+	t := time.NewTicker(30 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		sessions := e.auth.ActiveSessions()
+		for id, count := range sessions {
+			for i := 0; i < count; i++ {
+				max := 3
+				if g, ok := e.auth.UserMax(id); ok {
+					max = g
+				}
+				body, _ := json.Marshal(map[string]any{
+					"userID":   id,
+					"maxConns": max,
+				})
+				http.Post(e.workerURL+"/session/connect", "application/json", bytes.NewReader(body))
+			}
+		}
+	}
 }
 
 func (e *edge) netInfo() ([]string, []string, bool) {

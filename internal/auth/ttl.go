@@ -86,6 +86,15 @@ func (s *Store) SetMaxClients(userID string, max int) {
 	}
 }
 
+func (s *Store) UserMax(userID string) (int, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if g, ok := s.grants[userID]; ok {
+		return g.maxClients, true
+	}
+	return 0, false
+}
+
 func (s *Store) Authenticate(addr net.Addr, auth string, tx uint64) (bool, string) {
 	id, secret, ok := parseAuth(auth)
 	if !ok {
@@ -125,6 +134,9 @@ func (s *Store) Disconnect(addr net.Addr, id string, err error) {
 		s.active[id]--
 	}
 	s.sessionMu.Unlock()
+	if s.OnDisconnect != nil {
+		s.OnDisconnect(id)
+	}
 }
 func (s *Store) TCPRequest(addr net.Addr, id, reqAddr string)            {}
 func (s *Store) TCPError(addr net.Addr, id, reqAddr string, err error)  {}
