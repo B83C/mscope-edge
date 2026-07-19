@@ -38,14 +38,37 @@ type Store struct {
 
 	OnConnect    func(id string, maxClients int) // called when a session starts
 	OnDisconnect func(id string) // called when a session ends
+
+	blocked map[string]struct{} // users to reject (over limit)
+	blockedMu sync.Mutex
 }
 
 func NewStore() *Store {
 	return &Store{
-		grants: make(map[string]grant),
-		active: make(map[string]int),
-		stats:  make(map[string]*userStats),
+		grants:  make(map[string]grant),
+		active:  make(map[string]int),
+		stats:   make(map[string]*userStats),
+		blocked: make(map[string]struct{}),
 	}
+}
+
+func (s *Store) BlockUser(userID string) {
+	s.blockedMu.Lock()
+	defer s.blockedMu.Unlock()
+	s.blocked[userID] = struct{}{}
+}
+
+func (s *Store) UnblockUser(userID string) {
+	s.blockedMu.Lock()
+	defer s.blockedMu.Unlock()
+	delete(s.blocked, userID)
+}
+
+func (s *Store) IsBlocked(userID string) bool {
+	s.blockedMu.Lock()
+	defer s.blockedMu.Unlock()
+	_, ok := s.blocked[userID]
+	return ok
 }
 
 func (s *Store) Apply(payload control.GrantsPayload) {
@@ -99,6 +122,9 @@ func (s *Store) UserMax(userID string) (int, bool) {
 func (s *Store) Authenticate(addr net.Addr, auth string, tx uint64) (bool, string) {
 	id, secret, ok := parseAuth(auth)
 	if !ok {
+		return false, ""
+	}
+	if s.IsBlocked(id) {
 		return false, ""
 	}
 	s.mu.RLock()

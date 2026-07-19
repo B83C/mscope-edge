@@ -1117,8 +1117,19 @@ func (e *edge) workerWSLoop(ctx context.Context) {
 						Version: uint64(time.Now().Unix()), Grants: data.Grants,
 					})
 				}
+			case "connect_result":
+				if !data.OK {
+					log.Printf("worker: user %s blocked by DO (over limit), kicking", data.UserID)
+					e.auth.BlockUser(data.UserID)
+				}
 			case "session_update":
-				// Broadcast from another edge: update local cache (optional)
+				// Another edge's session changed; unblock if enough room
+				if data.UserID != "" {
+					max, _ := e.auth.UserMax(data.UserID)
+					if max > 0 && data.Count < max {
+						e.auth.UnblockUser(data.UserID)
+					}
+				}
 			}
 		}
 	}
