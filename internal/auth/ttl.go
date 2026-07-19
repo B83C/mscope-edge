@@ -36,6 +36,7 @@ type Store struct {
 	statsMu sync.RWMutex
 	stats   map[string]*userStats
 
+	OnConnect    func(id string, maxClients int) // called when a session starts
 	OnDisconnect func(id string) // called when a session ends
 }
 
@@ -124,7 +125,18 @@ func (s *Store) Authenticate(addr net.Addr, auth string, tx uint64) (bool, strin
 	return true, id
 }
 
-func (s *Store) Connect(addr net.Addr, id string, tx uint64) {}
+func (s *Store) Connect(addr net.Addr, id string, tx uint64) {
+	if id == "" {
+		return
+	}
+	if s.OnConnect != nil {
+		maxClients := 3
+		if g, ok := s.UserMax(id); ok {
+			maxClients = g
+		}
+		s.OnConnect(id, maxClients)
+	}
+}
 func (s *Store) Disconnect(addr net.Addr, id string, err error) {
 	if id == "" {
 		return

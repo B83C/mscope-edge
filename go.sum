@@ -4,6 +4,8 @@ github.com/apernet/hysteria/extras/v2 v2.9.3 h1:tQRh3YzUMgZmG1bEnDnJoZDiccx49v/S
 github.com/apernet/hysteria/extras/v2 v2.9.3/go.mod h1:hX4Gb19sjLyR+UFlGizVCzRteIraa0Y2d0lVg6y7FwU=
 github.com/apernet/quic-go v0.60.1-0.20260618182935-599b15a1fa26 h1:LTC+O+b5tux3RUzqqepNOkdMMI264O+mG09Y5j9Cf7Y=
 github.com/apernet/quic-go v0.60.1-0.20260618182935-599b15a1fa26/go.mod h1:B5eVtZG4ZkCvDZQNaOAAEZEtdBC7DIj56Q9EIb0mGAQ=
+github.com/coder/websocket v1.8.15 h1:6B2JPeOGlpff2Uz6vOEH1Vzpi0iUz20A+lPVhPHtNUA=
+github.com/coder/websocket v1.8.15/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/google/gopacket v1.1.19 h1:ves8RnFZPGiFnTS0uPQStjwru6uO6h+nlr9j6fL7kF8=

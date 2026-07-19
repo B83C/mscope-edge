@@ -9,6 +9,7 @@ require (
 
 require (
 	github.com/apernet/quic-go v0.60.1-0.20260618182935-599b15a1fa26 // indirect
+	github.com/coder/websocket v1.8.15 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/google/gopacket v1.1.19 // indirect
 	github.com/huin/goupnp v1.2.0 // indirect

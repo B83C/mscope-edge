@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -32,6 +31,7 @@ import (
 	"github.com/B83C/mscope-edge/internal/certvault"
 	"github.com/B83C/mscope-edge/internal/configsource"
 	"github.com/B83C/mscope-edge/pkg/control"
+	"github.com/coder/websocket"
 	hcore "github.com/apernet/hysteria/core/v2/server"
 	"github.com/apernet/hysteria/extras/v2/outbounds/speedtest"
 	"github.com/apernet/hysteria/extras/v2/realm"
@@ -47,6 +47,7 @@ func main() {
 		centralPub  = flag.String("central-pub", "", "path to central public key; overrides built-in")
 		edgeID      = flag.String("edge-id", "", "edge name (default: hostname)")
 		workerURL   = flag.String("worker-url", "", "Cloudflare Worker URL (disables TCP central)")
+		workerToken = flag.String("worker-token", "", "edge token for Worker auth")
 	)
 	flag.Parse()
 
@@ -94,8 +95,11 @@ func main() {
 	}
 	if *workerURL != "" {
 		log.Printf("worker: using Cloudflare Worker at %s", *workerURL)
-		// Device ID is needed for worker API calls
 		e.workerDeviceID = deviceID()
+		if *workerToken == "" {
+			log.Fatal("worker: -worker-token is required when -worker-url is set")
+		}
+		e.workerToken = *workerToken
 	}
 
 	if err := e.run(ctx, *centralAddr); err != nil && !errors.Is(err, context.Canceled) {
@@ -131,6 +135,9 @@ type edge struct {
 
 	workerURL       string
 	workerDeviceID  string
+	workerToken     string
+	workerWSConn    *websocket.Conn
+	workerWSMu      sync.Mutex
 
 	realmMu     sync.Mutex
 	realmCancel context.CancelFunc
@@ -216,14 +223,26 @@ func (e *edge) run(ctx context.Context, centralAddr string) error {
 	e.publicIPs, e.localIPs, e.isPrivate = discoverNetworkInfo()
 	log.Printf("network: public=%v local=%v private=%v", e.publicIPs, e.localIPs, e.isPrivate)
 
-	// Cloudflare Worker mode: no TCP central
+	// Cloudflare Worker mode: WebSocket + no TCP central
 	if e.workerURL != "" {
-		log.Printf("worker: bootstrapping from %s", e.workerURL)
+		// Bootstrap config via HTTP (one-time)
 		if err := e.bootstrapFromWorker(ctx); err != nil {
 			log.Printf("worker: bootstrap error: %v", err)
 		}
-		go e.workerPollLoop(ctx)
-		go e.sessionReportLoop(ctx)
+		// Connect/disconnect via WebSocket
+		e.auth.OnConnect = func(id string, maxClients int) {
+			if ws := e.workerWS(); ws != nil {
+				body, _ := json.Marshal(map[string]any{"type": "connect", "userID": id, "maxConns": maxClients})
+				ws.Write(ctx, websocket.MessageText, body)
+			}
+		}
+		e.auth.OnDisconnect = func(id string) {
+			if ws := e.workerWS(); ws != nil {
+				body, _ := json.Marshal(map[string]any{"type": "disconnect", "userID": id})
+				ws.Write(ctx, websocket.MessageText, body)
+			}
+		}
+		go e.workerWSLoop(ctx)
 		<-ctx.Done()
 		<-e.stopped
 		return ctx.Err()
@@ -963,6 +982,21 @@ func parseDuration(s string, def time.Duration) time.Duration {
 
 // --- Cloudflare Worker mode ---
 
+func (e *edge) workerWS() *websocket.Conn {
+	e.workerWSMu.Lock()
+	defer e.workerWSMu.Unlock()
+	return e.workerWSConn
+}
+
+func (e *edge) setWorkerWS(c *websocket.Conn) {
+	e.workerWSMu.Lock()
+	defer e.workerWSMu.Unlock()
+	if e.workerWSConn != nil {
+		e.workerWSConn.Close(websocket.StatusNormalClosure, "reconnect")
+	}
+	e.workerWSConn = c
+}
+
 func (e *edge) bootstrapFromWorker(ctx context.Context) error {
 	resp, err := http.Get(e.workerURL + "/edge/" + e.workerDeviceID)
 	if err != nil {
@@ -1009,62 +1043,81 @@ func (e *edge) bootstrapFromWorker(ctx context.Context) error {
 	return nil
 }
 
-func (e *edge) workerPollLoop(ctx context.Context) {
-	t := time.NewTicker(60 * time.Second)
-	defer t.Stop()
+func (e *edge) workerWSLoop(ctx context.Context) {
+	reconnect := 1 * time.Second
+	maxWait := 30 * time.Second
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		default:
 		}
-		resp, err := http.Get(e.workerURL + "/edge/" + e.workerDeviceID)
+		u := strings.Replace(e.workerURL, "https://", "wss://", 1)
+		u = strings.Replace(u, "http://", "ws://", 1)
+		u += "/ws?token=" + e.workerToken
+
+		c, _, err := websocket.Dial(ctx, u, nil)
 		if err != nil {
+			log.Printf("worker: ws dial error: %v (retry in %v)", err, reconnect)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(reconnect):
+				reconnect *= 2
+				if reconnect > maxWait {
+					reconnect = maxWait
+				}
+			}
 			continue
 		}
-		if resp.StatusCode == 200 {
-			var data struct {
-				Config *control.ServerConfig `json:"config"`
-				Grants []control.UserGrant   `json:"grants"`
-			}
-			json.NewDecoder(resp.Body).Decode(&data)
-			resp.Body.Close()
-			if data.Config != nil {
-				e.cfgSrc.Apply(control.ConfigPayload{Version: 1, Config: *data.Config})
-				e.maybeBuildServer(ctx)
-			}
-			if len(data.Grants) > 0 {
-				e.auth.Apply(control.GrantsPayload{
-					Version: uint64(time.Now().Unix()), Grants: data.Grants,
-				})
-			}
-		} else {
-			resp.Body.Close()
-		}
-	}
-}
+		reconnect = 1 * time.Second
+		e.setWorkerWS(c)
+		log.Printf("worker: ws connected")
 
-func (e *edge) sessionReportLoop(ctx context.Context) {
-	t := time.NewTicker(30 * time.Second)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-		sessions := e.auth.ActiveSessions()
-		for id, count := range sessions {
-			for i := 0; i < count; i++ {
-				max := 3
-				if g, ok := e.auth.UserMax(id); ok {
-					max = g
+		for {
+			_, msg, err := c.Read(ctx)
+			if err != nil {
+				log.Printf("worker: ws read error: %v (reconnecting)", err)
+				e.setWorkerWS(nil)
+				break
+			}
+			var data struct {
+				Type    string                `json:"type"`
+				Config  *control.ServerConfig `json:"config"`
+				Grants  []control.UserGrant   `json:"grants"`
+				UserID  string                `json:"userID"`
+				Count   int                   `json:"count"`
+				OK      bool                  `json:"ok"`
+				Cert    *struct {
+					DER string `json:"der"`
+					Key string `json:"key"`
+					Pin string `json:"pin"`
+				} `json:"cert"`
+			}
+			if err := json.Unmarshal(msg, &data); err != nil {
+				continue
+			}
+			switch data.Type {
+			case "config":
+				if data.Config != nil {
+					e.cfgSrc.Apply(control.ConfigPayload{Version: 1, Config: *data.Config})
+					e.maybeBuildServer(ctx)
 				}
-				body, _ := json.Marshal(map[string]any{
-					"userID":   id,
-					"maxConns": max,
-				})
-				http.Post(e.workerURL+"/session/connect", "application/json", bytes.NewReader(body))
+				if data.Cert != nil {
+					certDER, _ := base64.StdEncoding.DecodeString(data.Cert.DER)
+					keyDER, _ := base64.StdEncoding.DecodeString(data.Cert.Key)
+					if len(certDER) > 0 && len(keyDER) > 0 {
+						e.vault.InstallFromDER(certDER, keyDER)
+						e.maybeBuildServer(ctx)
+					}
+				}
+				if len(data.Grants) > 0 {
+					e.auth.Apply(control.GrantsPayload{
+						Version: uint64(time.Now().Unix()), Grants: data.Grants,
+					})
+				}
+			case "session_update":
+				// Broadcast from another edge: update local cache (optional)
 			}
 		}
 	}
