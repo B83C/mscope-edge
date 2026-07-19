@@ -230,9 +230,9 @@ func (e *edge) run(ctx context.Context, centralAddr string) error {
 			log.Printf("worker: bootstrap error: %v", err)
 		}
 		// Connect/disconnect via WebSocket
-		e.auth.OnConnect = func(id string, maxClients int) {
+		e.auth.OnConnect = func(id string) {
 			if ws := e.workerWS(); ws != nil {
-				body, _ := json.Marshal(map[string]any{"type": "connect", "userID": id, "maxConns": maxClients})
+				body, _ := json.Marshal(map[string]any{"type": "connect", "userID": id})
 				ws.Write(ctx, websocket.MessageText, body)
 			}
 		}
@@ -1074,6 +1074,10 @@ func (e *edge) workerWSLoop(ctx context.Context) {
 		reconnect = 1 * time.Second
 		e.setWorkerWS(c)
 		log.Printf("worker: ws connected")
+
+		// Send join with version info
+		joinBody, _ := json.Marshal(map[string]any{"type": "join", "deviceID": e.workerDeviceID, "version": "1.0"})
+		c.Write(ctx, websocket.MessageText, joinBody)
 
 		for {
 			_, msg, err := c.Read(ctx)
