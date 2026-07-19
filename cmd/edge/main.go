@@ -243,6 +243,7 @@ func (e *edge) run(ctx context.Context, centralAddr string) error {
 			}
 		}
 		go e.workerWSLoop(ctx)
+		go e.workerTrafficLoop(ctx)
 		<-ctx.Done()
 		<-e.stopped
 		return ctx.Err()
@@ -1119,6 +1120,37 @@ func (e *edge) workerWSLoop(ctx context.Context) {
 			case "session_update":
 				// Broadcast from another edge: update local cache (optional)
 			}
+		}
+	}
+}
+
+func (e *edge) workerTrafficLoop(ctx context.Context) {
+	t := time.NewTicker(60 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		stats := e.auth.AllStats()
+		type userStat struct {
+			UserID string `json:"userID"`
+			Tx     uint64 `json:"tx"`
+			Rx     uint64 `json:"rx"`
+		}
+		var users []userStat
+		for id, st := range stats {
+			if st.Tx > 0 || st.Rx > 0 {
+				users = append(users, userStat{UserID: id, Tx: st.Tx, Rx: st.Rx})
+			}
+		}
+		if len(users) == 0 {
+			continue
+		}
+		if ws := e.workerWS(); ws != nil {
+			body, _ := json.Marshal(map[string]any{"type": "traffic", "users": users})
+			ws.Write(ctx, websocket.MessageText, body)
 		}
 	}
 }
