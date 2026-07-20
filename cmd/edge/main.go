@@ -37,20 +37,17 @@ import (
 	"github.com/apernet/hysteria/extras/v2/realm"
 )
 
-// Set at build time via -ldflags
+// mTLS client cert for Cloudflare API Shield
+// Bake via GitHub secret: -ldflags="-X main.mtlsCertB64=\$(base64 < client.pem) -X main.mtlsKeyB64=\$(base64 < client.key)"
 var (
-	centralPubB64 string // central Ed25519 public key
-
-	// mTLS client cert for Cloudflare API Shield
-	// Bake with: -ldflags="-X main.mtlsCertB64=$(base64 < client.pem) -X main.mtlsKeyB64=$(base64 < client.key)"
-	mtlsCertB64 string // PEM of client certificate
-	mtlsKeyB64  string // PEM of client private key
+	mtlsCertB64 string
+	mtlsKeyB64  string
 )
 
 func main() {
 	var (
 		centralAddr = flag.String("central-addr", "127.0.0.1:38472", "central server address")
-		centralPub  = flag.String("central-pub", "", "path to central public key; overrides built-in")
+		centralPub  = flag.String("central-pub", "", "path to central public key (legacy TCP mode)")
 		edgeID      = flag.String("edge-id", "", "edge name (default: hostname)")
 		workerURL   = flag.String("worker-url", "", "Cloudflare Worker URL (disables TCP central)")
 	)
@@ -64,31 +61,13 @@ func main() {
 		*edgeID = h
 	}
 
-	var pub ed25519.PublicKey
-	if *centralPub != "" {
-		var err error
-		pub, err = loadCentralPubFile(*centralPub)
-		if err != nil {
-			log.Fatalf("load central pub: %v", err)
-		}
-	} else if centralPubB64 != "" {
-		b, err := base64.StdEncoding.DecodeString(centralPubB64)
-		if err != nil {
-			log.Fatalf("decode built-in central pub: %v", err)
-		}
-		pub = ed25519.PublicKey(b)
-	} else {
-		pub, _ = loadCentralPubFile("certs/central.pub")
-		if pub == nil {
-			log.Fatal("no central public key found. Either:\n" +
-				"  1. Build with -ldflags=\"-X main.centralPubB64=$(base64 < certs/central.pub)\"\n" +
-				"  2. Place certs/central.pub next to the binary\n" +
-				"  3. Use -central-pub flag")
-		}
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	var pub ed25519.PublicKey
+	if *centralPub != "" {
+		pub, _ = loadCentralPubFile(*centralPub)
+	}
 
 	e := &edge{
 		centralPub: pub,

@@ -54,6 +54,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            CENTRAL_PUB_B64=${{ secrets.CENTRAL_PUB_B64 }}
+            MTLS_CERT_B64=${{ secrets.MTLS_CERT_B64 }}
+            MTLS_KEY_B64=${{ secrets.MTLS_KEY_B64 }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
