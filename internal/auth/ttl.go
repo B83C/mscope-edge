@@ -41,6 +41,9 @@ type Store struct {
 
 	blocked map[string]struct{} // users to reject (over limit)
 	blockedMu sync.Mutex
+
+	kick    map[string]struct{} // kick on next traffic (one-shot)
+	kickMu  sync.Mutex
 }
 
 func NewStore() *Store {
@@ -49,6 +52,7 @@ func NewStore() *Store {
 		active:  make(map[string]int),
 		stats:   make(map[string]*userStats),
 		blocked: make(map[string]struct{}),
+		kick:    make(map[string]struct{}),
 	}
 }
 
@@ -177,9 +181,25 @@ func (s *Store) TCPError(addr net.Addr, id, reqAddr string, err error)  {}
 func (s *Store) UDPRequest(addr net.Addr, id string, sessionID uint32, reqAddr string) {}
 func (s *Store) UDPError(addr net.Addr, id string, sessionID uint32, err error) {}
 
+func (s *Store) KickUser(userID string) {
+	s.kickMu.Lock()
+	defer s.kickMu.Unlock()
+	s.kick[userID] = struct{}{}
+}
+
 func (s *Store) LogTraffic(id string, tx, rx uint64) bool {
 	if id == "" {
 		return true
+	}
+	// One-shot kick: disconnect this user on next traffic
+	s.kickMu.Lock()
+	_, shouldKick := s.kick[id]
+	if shouldKick {
+		delete(s.kick, id)
+	}
+	s.kickMu.Unlock()
+	if shouldKick {
+		return false
 	}
 	st := s.getOrCreateStats(id)
 	if tx > 0 {

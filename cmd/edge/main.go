@@ -826,8 +826,8 @@ func (e *edge) workerWSLoop(ctx context.Context) {
 				}
 			case "connect_result":
 				if !data.OK {
-					log.Printf("worker: user %s blocked by DO (over limit), kicking", data.UserID)
-					e.auth.BlockUser(data.UserID)
+					log.Printf("worker: user %s over limit, kicking", data.UserID)
+					e.auth.KickUser(data.UserID)
 				}
 			case "session_update":
 				// Another edge's session changed; unblock if enough room
