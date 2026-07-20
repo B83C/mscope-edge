@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	hcore "github.com/apernet/hysteria/core/v2/server"
 	"github.com/B83C/mscope-edge/pkg/control"
+	hcore "github.com/apernet/hysteria/core/v2/server"
 )
 
 type grant struct {
@@ -39,11 +39,11 @@ type Store struct {
 	OnConnect    func(id string) // called when a session starts
 	OnDisconnect func(id string) // called when a session ends
 
-	blocked map[string]struct{} // users to reject (over limit)
+	blocked   map[string]struct{} // users to reject (over limit)
 	blockedMu sync.Mutex
 
-	kick    map[string]struct{} // kick on next traffic (one-shot)
-	kickMu  sync.Mutex
+	kick   map[string]struct{} // kick on next traffic (one-shot)
+	kickMu sync.Mutex
 }
 
 func NewStore() *Store {
@@ -176,10 +176,10 @@ func (s *Store) Disconnect(addr net.Addr, id string, err error) {
 		s.OnDisconnect(id)
 	}
 }
-func (s *Store) TCPRequest(addr net.Addr, id, reqAddr string)            {}
-func (s *Store) TCPError(addr net.Addr, id, reqAddr string, err error)  {}
+func (s *Store) TCPRequest(addr net.Addr, id, reqAddr string)                          {}
+func (s *Store) TCPError(addr net.Addr, id, reqAddr string, err error)                 {}
 func (s *Store) UDPRequest(addr net.Addr, id string, sessionID uint32, reqAddr string) {}
-func (s *Store) UDPError(addr net.Addr, id string, sessionID uint32, err error) {}
+func (s *Store) UDPError(addr net.Addr, id string, sessionID uint32, err error)        {}
 
 func (s *Store) KickUser(userID string) {
 	s.kickMu.Lock()
@@ -260,22 +260,22 @@ func (s *Store) UserStats(id string) (tx, rx uint64, online bool) {
 }
 
 func (s *Store) AllStats() map[string]struct {
-	Tx, Rx  uint64
-	Online  bool
+	Tx, Rx   uint64
+	Online   bool
 	LastSeen int64
 } {
 	s.statsMu.RLock()
 	defer s.statsMu.RUnlock()
 	out := make(map[string]struct {
-		Tx, Rx    uint64
-		Online    bool
-		LastSeen  int64
+		Tx, Rx   uint64
+		Online   bool
+		LastSeen int64
 	}, len(s.stats))
 	for id, st := range s.stats {
 		out[id] = struct {
-			Tx, Rx    uint64
-			Online    bool
-			LastSeen  int64
+			Tx, Rx   uint64
+			Online   bool
+			LastSeen int64
 		}{
 			Tx:       st.Tx.Load(),
 			Rx:       st.Rx.Load(),

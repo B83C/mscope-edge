@@ -35,8 +35,8 @@ func runRealmLoop(ctx context.Context, cfg realmConfig, punchConn *realm.PunchPa
 	}
 
 	client, err := realm.NewClient(realm.ClientConfig{
-		BaseURL: baseURL,
-		Token:   token,
+		BaseURL:    baseURL,
+		Token:      token,
 		HTTPClient: &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{}}},
 	})
 	if err != nil {
@@ -251,5 +251,3 @@ func addrPortsToStrings(addrs []netip.AddrPort) []string {
 	}
 	return out
 }
-
-

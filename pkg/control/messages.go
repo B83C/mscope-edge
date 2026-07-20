@@ -11,23 +11,23 @@ import (
 type MessageType string
 
 const (
-	MsgHello    MessageType = "hello"
-	MsgHeartbeat MessageType = "heartbeat"
-	MsgConfig   MessageType = "config"
-	MsgCert     MessageType = "cert"
-	MsgGrants   MessageType = "grants"
-	MsgRevoke   MessageType = "revoke"
-	MsgDrain    MessageType = "drain"
-	MsgRealm    MessageType = "realm"
-	MsgIdentify MessageType = "identify"
-	MsgAccept   MessageType = "accept"
-	MsgReject   MessageType = "reject"
+	MsgHello         MessageType = "hello"
+	MsgHeartbeat     MessageType = "heartbeat"
+	MsgConfig        MessageType = "config"
+	MsgCert          MessageType = "cert"
+	MsgGrants        MessageType = "grants"
+	MsgRevoke        MessageType = "revoke"
+	MsgDrain         MessageType = "drain"
+	MsgRealm         MessageType = "realm"
+	MsgIdentify      MessageType = "identify"
+	MsgAccept        MessageType = "accept"
+	MsgReject        MessageType = "reject"
 	MsgUpgrade       MessageType = "upgrade"
 	MsgAuthRequest   MessageType = "auth_req"
 	MsgAuthResponse  MessageType = "auth_res"
-	MsgDisconnected   MessageType = "disconnected"
-	MsgTrafficReport  MessageType = "traffic"
-	MsgAck            MessageType = "ack"
+	MsgDisconnected  MessageType = "disconnected"
+	MsgTrafficReport MessageType = "traffic"
+	MsgAck           MessageType = "ack"
 	MsgError         MessageType = "error"
 )
 
@@ -39,39 +39,39 @@ type Envelope struct {
 }
 
 type HelloPayload struct {
-	CentralID    string `json:"central_id"`
-	ProtocolVersion int  `json:"protocol_version"`
+	CentralID       string `json:"central_id"`
+	ProtocolVersion int    `json:"protocol_version"`
 }
 
 type HeartbeatPayload struct {
-	EdgeID     string `json:"edge_id"`
-	Uptime     int64  `json:"uptime"`
-	ConnCount  int    `json:"conn_count"`
+	EdgeID    string `json:"edge_id"`
+	Uptime    int64  `json:"uptime"`
+	ConnCount int    `json:"conn_count"`
 }
 
 type ServerConfig struct {
-	Listen                string `json:"listen"`
-	CertSNI               string `json:"cert_sni"`
-	TCPMbps               int    `json:"tcpmbps"`
-	MaxClients            int    `json:"max_clients"`
-	UDPIdleSecs           int    `json:"udp_idle_secs"`
-	MasqDomain            string `json:"masq_domain"`
-	DisableUDP            bool   `json:"disable_udp"`
-	IgnoreClientBandwidth bool   `json:"ignore_client_bw"`
-	CongestionType        string `json:"congestion_type"`
-	BBRProfile            string `json:"bbr_profile"`
-	QUICStreamRcvWin      uint64 `json:"quic_stream_rcv_win"`
-	QUICMaxStreamRcvWin   uint64 `json:"quic_max_stream_rcv_win"`
-	QUICConnRcvWin        uint64 `json:"quic_conn_rcv_win"`
-	QUICMaxConnRcvWin     uint64 `json:"quic_max_conn_rcv_win"`
-	QUICMaxIdleTimeout    string `json:"quic_max_idle_timeout"`
+	Listen                 string `json:"listen"`
+	CertSNI                string `json:"cert_sni"`
+	TCPMbps                int    `json:"tcpmbps"`
+	MaxClients             int    `json:"max_clients"`
+	UDPIdleSecs            int    `json:"udp_idle_secs"`
+	MasqDomain             string `json:"masq_domain"`
+	DisableUDP             bool   `json:"disable_udp"`
+	IgnoreClientBandwidth  bool   `json:"ignore_client_bw"`
+	CongestionType         string `json:"congestion_type"`
+	BBRProfile             string `json:"bbr_profile"`
+	QUICStreamRcvWin       uint64 `json:"quic_stream_rcv_win"`
+	QUICMaxStreamRcvWin    uint64 `json:"quic_max_stream_rcv_win"`
+	QUICConnRcvWin         uint64 `json:"quic_conn_rcv_win"`
+	QUICMaxConnRcvWin      uint64 `json:"quic_max_conn_rcv_win"`
+	QUICMaxIdleTimeout     string `json:"quic_max_idle_timeout"`
 	QUICMaxIncomingStreams int64  `json:"quic_max_incoming_streams"`
-	QUICDisablePathMTU    bool   `json:"quic_disable_path_mtu"`
+	QUICDisablePathMTU     bool   `json:"quic_disable_path_mtu"`
 }
 
 type ConfigPayload struct {
-	Version   uint64       `json:"version"`
-	Config    ServerConfig `json:"config"`
+	Version uint64       `json:"version"`
+	Config  ServerConfig `json:"config"`
 }
 
 type CertPayload struct {
@@ -176,10 +176,10 @@ type RejectPayload struct {
 }
 
 type UpgradePayload struct {
-	URL         string `json:"url"`
-	SHA256      string `json:"sha256"`
-	Version     string `json:"version"`
-	Force       bool   `json:"force"`
+	URL     string `json:"url"`
+	SHA256  string `json:"sha256"`
+	Version string `json:"version"`
+	Force   bool   `json:"force"`
 }
 
 type AuthRequestPayload struct {

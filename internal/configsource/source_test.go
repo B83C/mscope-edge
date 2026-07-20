@@ -18,7 +18,7 @@ func TestApplyConfig(t *testing.T) {
 	cfg := control.ConfigPayload{
 		Version: 1,
 		Config: control.ServerConfig{
-			Listen: "0.0.0.0:443",
+			Listen:  "0.0.0.0:443",
 			CertSNI: "test.example.com",
 			TCPMbps: 200,
 		},

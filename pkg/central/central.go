@@ -131,9 +131,9 @@ type Server struct {
 }
 
 type AuthHandler struct {
-	OnAuthReq        func(control.AuthRequestPayload) (ok bool, id string)
-	OnDisconnected   func(control.DisconnectedPayload)
-	OnTrafficReport  func(control.TrafficReportPayload)
+	OnAuthReq       func(control.AuthRequestPayload) (ok bool, id string)
+	OnDisconnected  func(control.DisconnectedPayload)
+	OnTrafficReport func(control.TrafficReportPayload)
 }
 
 func Dial(ctx context.Context, addr string, priv ed25519.PrivateKey, ah *AuthHandler) (*control.Channel, error) {
@@ -192,9 +192,9 @@ func Dial(ctx context.Context, addr string, priv ed25519.PrivateKey, ah *AuthHan
 // GlobalSessionStore tracks active sessions across all edges.
 // Embed in your webserver and pass to Dial.
 type GlobalSessionStore struct {
-	mu      sync.Mutex
-	Active  map[string]int          // userID → count
-	Grants  map[string]int          // userID → maxClients
+	mu     sync.Mutex
+	Active map[string]int // userID → count
+	Grants map[string]int // userID → maxClients
 }
 
 func NewGlobalSessionStore() *GlobalSessionStore {

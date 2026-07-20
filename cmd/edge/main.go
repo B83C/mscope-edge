@@ -2,12 +2,11 @@ package main
 
 import (
 	"context"
-	"os/exec"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -18,6 +17,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"sync"
@@ -29,10 +29,10 @@ import (
 	"github.com/B83C/mscope-edge/internal/certvault"
 	"github.com/B83C/mscope-edge/internal/configsource"
 	"github.com/B83C/mscope-edge/pkg/control"
-	"github.com/coder/websocket"
 	hcore "github.com/apernet/hysteria/core/v2/server"
 	"github.com/apernet/hysteria/extras/v2/outbounds/speedtest"
 	"github.com/apernet/hysteria/extras/v2/realm"
+	"github.com/coder/websocket"
 )
 
 // mTLS client cert for Cloudflare API Shield
@@ -55,11 +55,11 @@ func main() {
 	defer stop()
 
 	e := &edge{
-		edgeID: hostname,
-		vault:  certvault.New(),
-		cfgSrc:     configsource.New(),
-		auth:       auth.NewStore(),
-		workerURL:  *workerURL,
+		edgeID:    hostname,
+		vault:     certvault.New(),
+		cfgSrc:    configsource.New(),
+		auth:      auth.NewStore(),
+		workerURL: *workerURL,
 	}
 
 	// mTLS client cert for Cloudflare API Shield
@@ -107,11 +107,11 @@ type edge struct {
 	tcpListener net.Listener
 	tcpServer   *http.Server
 
-	workerURL       string
-	workerDeviceID  string
-	workerTLS       *tls.Config // mTLS client cert for Cloudflare
-	workerWSConn    *websocket.Conn
-	workerWSMu      sync.Mutex
+	workerURL      string
+	workerDeviceID string
+	workerTLS      *tls.Config // mTLS client cert for Cloudflare
+	workerWSConn   *websocket.Conn
+	workerWSMu     sync.Mutex
 
 	realmMu     sync.Mutex
 	realmCancel context.CancelFunc
@@ -790,13 +790,13 @@ func (e *edge) workerWSLoop(ctx context.Context) {
 				break
 			}
 			var data struct {
-				Type    string                `json:"type"`
-				Config  *control.ServerConfig `json:"config"`
-				Grants  []control.UserGrant   `json:"grants"`
-				UserID  string                `json:"userID"`
-				Count   int                   `json:"count"`
-				OK      bool                  `json:"ok"`
-				Cert    *struct {
+				Type   string                `json:"type"`
+				Config *control.ServerConfig `json:"config"`
+				Grants []control.UserGrant   `json:"grants"`
+				UserID string                `json:"userID"`
+				Count  int                   `json:"count"`
+				OK     bool                  `json:"ok"`
+				Cert   *struct {
 					DER string `json:"der"`
 					Key string `json:"key"`
 					Pin string `json:"pin"`

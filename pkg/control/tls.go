@@ -3,11 +3,11 @@ package control
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/subtle"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"crypto/subtle"
 	"errors"
-	"crypto/tls"
 	"fmt"
 	"math/big"
 	"time"

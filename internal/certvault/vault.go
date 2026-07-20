@@ -107,5 +107,3 @@ func (v *Vault) ExpiresAt() time.Time {
 func (v *Vault) HasCert() bool {
 	return v.current.Load() != nil
 }
-
-

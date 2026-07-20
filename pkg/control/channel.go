@@ -13,24 +13,24 @@ import (
 )
 
 type Handlers struct {
-	OnHello    func(HelloPayload) error
-	OnHeartbeat func(HeartbeatPayload) error
-	OnConfig   func(ConfigPayload) error
-	OnCert     func(CertPayload) error
-	OnGrants   func(GrantsPayload) error
-	OnRevoke   func(RevokePayload) error
-	OnDrain    func(DrainPayload) error
-	OnRealm    func(RealmPayload) error
-	OnIdentify func(IdentifyPayload) error
-	OnAccept   func(AcceptPayload) error
-	OnReject   func(RejectPayload) error
-	OnUpgrade      func(UpgradePayload) error
-	OnAuthRequest  func(AuthRequestPayload) error
-	OnAuthResponse func(AuthResponsePayload) error
-	OnDisconnected   func(DisconnectedPayload) error
-	OnTrafficReport  func(TrafficReportPayload) error
-	OnError          func(ErrorPayload) error
-	OnCentralGone func()
+	OnHello         func(HelloPayload) error
+	OnHeartbeat     func(HeartbeatPayload) error
+	OnConfig        func(ConfigPayload) error
+	OnCert          func(CertPayload) error
+	OnGrants        func(GrantsPayload) error
+	OnRevoke        func(RevokePayload) error
+	OnDrain         func(DrainPayload) error
+	OnRealm         func(RealmPayload) error
+	OnIdentify      func(IdentifyPayload) error
+	OnAccept        func(AcceptPayload) error
+	OnReject        func(RejectPayload) error
+	OnUpgrade       func(UpgradePayload) error
+	OnAuthRequest   func(AuthRequestPayload) error
+	OnAuthResponse  func(AuthResponsePayload) error
+	OnDisconnected  func(DisconnectedPayload) error
+	OnTrafficReport func(TrafficReportPayload) error
+	OnError         func(ErrorPayload) error
+	OnCentralGone   func()
 }
 
 type Channel struct {
@@ -44,7 +44,7 @@ type Channel struct {
 	seqSend atomic.Uint64
 	seqRecv atomic.Uint64
 
-	closed chan struct{}
+	closed    chan struct{}
 	closeOnce sync.Once
 }
 
