@@ -2,14 +2,12 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
 	"os/exec"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/hex"
-	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
@@ -45,34 +43,20 @@ var (
 )
 
 func main() {
-	var (
-		centralAddr = flag.String("central-addr", "127.0.0.1:38472", "central server address")
-		centralPub  = flag.String("central-pub", "", "path to central public key (legacy TCP mode)")
-		edgeID      = flag.String("edge-id", "", "edge name (default: hostname)")
-		workerURL   = flag.String("worker-url", "", "Cloudflare Worker URL (disables TCP central)")
-	)
+	workerURL := flag.String("worker-url", "http://localhost:8777", "Cloudflare Worker URL")
 	flag.Parse()
 
-	if *edgeID == "" {
-		h, err := os.Hostname()
-		if err != nil {
-			log.Fatalf("hostname: %v", err)
-		}
-		*edgeID = h
+	hostname, err := os.Hostname()
+	if err != nil {
+		log.Fatalf("hostname: %v", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	var pub ed25519.PublicKey
-	if *centralPub != "" {
-		pub, _ = loadCentralPubFile(*centralPub)
-	}
-
 	e := &edge{
-		centralPub: pub,
-		edgeID:     *edgeID,
-		vault:      certvault.New(),
+		edgeID: hostname,
+		vault:  certvault.New(),
 		cfgSrc:     configsource.New(),
 		auth:       auth.NewStore(),
 		workerURL:  *workerURL,
@@ -99,14 +83,13 @@ func main() {
 		e.workerDeviceID = deviceID()
 	}
 
-	if err := e.run(ctx, *centralAddr); err != nil && !errors.Is(err, context.Canceled) {
+	if err := e.run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatalf("edge: %v", err)
 	}
 }
 
 type edge struct {
-	centralPub ed25519.PublicKey
-	edgeID     string
+	edgeID string
 
 	vault  *certvault.Vault
 	cfgSrc *configsource.Source
@@ -123,12 +106,6 @@ type edge struct {
 
 	tcpListener net.Listener
 	tcpServer   *http.Server
-
-	centralMu     sync.Mutex
-	centralActive bool
-	authCh        *control.Channel // set when central connected, for proxied auth
-	authPending   sync.Map         // reqID → chan bool
-	authSeq       atomic.Uint64
 
 	workerURL       string
 	workerDeviceID  string
@@ -150,59 +127,9 @@ type edge struct {
 	stopped chan struct{}
 }
 
-// centralAuth proxies auth requests to central over the control channel.
-// Falls back to local auth.Store if central is unreachable.
-type centralAuth struct {
-	edge *edge
-}
+// (no centralAuth: auth is handled locally in worker mode)
 
-func (a *centralAuth) Authenticate(addr net.Addr, auth string, tx uint64) (bool, string) {
-	ch := a.edge.authCh
-	if ch == nil {
-		return a.edge.auth.Authenticate(addr, auth, tx)
-	}
-
-	reqID := fmt.Sprintf("%d", a.edge.authSeq.Add(1))
-	resp := make(chan bool, 1)
-	a.edge.authPending.Store(reqID, resp)
-	defer a.edge.authPending.Delete(reqID)
-	defer close(resp)
-
-	err := ch.Send(control.MsgAuthRequest, control.AuthRequestPayload{
-		RequestID: reqID,
-		UserID:    splitAuth(auth),
-		Secret:    splitSecret(auth),
-		Addr:      addr.String(),
-	})
-	if err != nil {
-		return a.edge.auth.Authenticate(addr, auth, tx)
-	}
-
-	select {
-	case ok := <-resp:
-		return ok, splitAuth(auth)
-	case <-time.After(10 * time.Second):
-		return a.edge.auth.Authenticate(addr, auth, tx)
-	}
-}
-
-func splitAuth(auth string) string {
-	idx := strings.IndexByte(auth, ':')
-	if idx <= 0 {
-		return auth
-	}
-	return auth[:idx]
-}
-
-func splitSecret(auth string) string {
-	idx := strings.IndexByte(auth, ':')
-	if idx <= 0 || idx == len(auth)-1 {
-		return ""
-	}
-	return auth[idx+1:]
-}
-
-func (e *edge) run(ctx context.Context, centralAddr string) error {
+func (e *edge) run(ctx context.Context) error {
 	e.readyCh = make(chan struct{})
 	e.stopped = make(chan struct{})
 
@@ -220,240 +147,31 @@ func (e *edge) run(ctx context.Context, centralAddr string) error {
 	e.publicIPs, e.localIPs, e.isPrivate = discoverNetworkInfo()
 	log.Printf("network: public=%v local=%v private=%v", e.publicIPs, e.localIPs, e.isPrivate)
 
-	// Cloudflare Worker mode: WebSocket + no TCP central
-	if e.workerURL != "" {
-		// Bootstrap config via HTTP (one-time)
-		if err := e.bootstrapFromWorker(ctx); err != nil {
-			log.Printf("worker: bootstrap error: %v", err)
-		}
-		// Connect/disconnect via WebSocket
-		e.auth.OnConnect = func(id string) {
-			if ws := e.workerWS(); ws != nil {
-				body, _ := json.Marshal(map[string]any{"type": "connect", "userID": id})
-				ws.Write(ctx, websocket.MessageText, body)
-			}
-		}
-		e.auth.OnDisconnect = func(id string) {
-			if ws := e.workerWS(); ws != nil {
-				body, _ := json.Marshal(map[string]any{"type": "disconnect", "userID": id})
-				ws.Write(ctx, websocket.MessageText, body)
-			}
-		}
-		go e.workerWSLoop(ctx)
-		<-ctx.Done()
-		<-e.stopped
-		return ctx.Err()
+	// Bootstrap config via HTTP (one-time)
+	if err := e.bootstrapFromWorker(ctx); err != nil {
+		log.Printf("worker: bootstrap error: %v", err)
 	}
-
-	log.Printf("control: dialing central at %s, edge id %s", centralAddr, e.edgeID)
-
-	for {
-		if ctx.Err() != nil {
-			<-e.stopped
-			return ctx.Err()
-		}
-
-		conn, err := net.Dial("tcp", centralAddr)
-		if err != nil {
-			log.Printf("control: dial %s failed: %v (retry in 5s)", centralAddr, err)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(5 * time.Second):
-			}
-			continue
-		}
-
-		e.handleCentral(ctx, conn)
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(2 * time.Second):
+	// Connect/disconnect via WebSocket
+	e.auth.OnConnect = func(id string) {
+		if ws := e.workerWS(); ws != nil {
+			body, _ := json.Marshal(map[string]any{"type": "connect", "userID": id})
+			ws.Write(ctx, websocket.MessageText, body)
 		}
 	}
-}
-
-func (e *edge) handleCentral(ctx context.Context, conn net.Conn) {
-	remote := conn.RemoteAddr()
-	log.Printf("control: incoming connection from %s", remote)
-
-	e.centralMu.Lock()
-	if e.centralActive {
-		e.centralMu.Unlock()
-		log.Printf("control: rejecting second central connection from %s (already active)", remote)
-		conn.Close()
-		return
-	}
-	e.centralActive = true
-	e.centralMu.Unlock()
-
-	if err := control.EdgeHandshake(conn, e.centralPub); err != nil {
-		log.Printf("control: handshake from %s failed: %v", remote, err)
-		conn.Close()
-		e.centralMu.Lock()
-		e.centralActive = false
-		e.centralMu.Unlock()
-		return
-	}
-	log.Printf("control: handshake from %s OK", remote)
-
-	tlsCfg := control.NewClientTLSConfig(e.centralPub)
-	tlsConn := tls.Client(conn, tlsCfg)
-	if err := tlsConn.Handshake(); err != nil {
-		log.Printf("control: tls handshake from %s failed: %v", remote, err)
-		conn.Close()
-		e.centralMu.Lock()
-		e.centralActive = false
-		e.centralMu.Unlock()
-		return
-	}
-	log.Printf("control: tls established with %s", remote)
-
-	e.mu.Lock()
-	e.lastCold = ""
-	e.mu.Unlock()
-
-	// Identification exchange: send device ID, wait for accept/reject
-	identCh := make(chan error, 1)
-
-	var ch *control.Channel
-	ch = control.NewChannel(tlsConn, control.Handlers{
-		OnAccept: func(p control.AcceptPayload) error {
-			log.Printf("control: accepted by central: %s", p.Message)
-			identCh <- nil
-			return nil
-		},
-		OnReject: func(p control.RejectPayload) error {
-			log.Printf("control: REJECTED by central: %s", p.Reason)
-			identCh <- fmt.Errorf("rejected: %s", p.Reason)
-			return nil
-		},
-		OnHello: func(p control.HelloPayload) error {
-			log.Printf("control: hello from central %s (proto v%d)", p.CentralID, p.ProtocolVersion)
-			return ch.Send(control.MsgAck, nil)
-		},
-		OnConfig: func(p control.ConfigPayload) error {
-			log.Printf("control: config version %d received", p.Version)
-			if err := e.applyConfig(ctx, p); err != nil {
-				log.Printf("control: config apply error: %v", err)
-				return err
-			}
-			return nil
-		},
-		OnCert: func(p control.CertPayload) error {
-			log.Printf("control: cert serial=%s pin=%s not_after=%s",
-				p.Serial, p.PinSHA256[:8]+"...", p.NotAfter.Format(time.RFC3339))
-			if err := e.applyCert(ctx, p); err != nil {
-				return err
-			}
-			return nil
-		},
-		OnGrants: func(p control.GrantsPayload) error {
-			log.Printf("control: grants version %d, %d users", p.Version, len(p.Grants))
-			e.auth.Apply(p)
-			for _, g := range p.Grants {
-				if g.MaxClients > 0 {
-					e.auth.SetMaxClients(g.UserID, g.MaxClients)
-				}
-			}
-			return nil
-		},
-		OnRevoke: func(p control.RevokePayload) error {
-			log.Printf("control: revoke version %d, %d users", p.Version, len(p.Users))
-			e.auth.Revoke(p)
-			return nil
-		},
-		OnDrain: func(p control.DrainPayload) error {
-			log.Printf("control: drain requested: %s", p.Reason)
-			e.mu.Lock()
-			e.shutdownServerLocked()
-			e.lastCold = ""
-			e.mu.Unlock()
-			return nil
-		},
-		OnRealm: func(p control.RealmPayload) error {
-			return e.applyRealm(ctx, p)
-		},
-		OnUpgrade: func(p control.UpgradePayload) error {
-			return e.applyUpgrade(ctx, p)
-		},
-		OnAuthResponse: func(p control.AuthResponsePayload) error {
-			if v, ok := e.authPending.Load(p.RequestID); ok {
-				v.(chan bool) <- p.OK
-			}
-			return nil
-		},
-		OnCentralGone: func() {
-			log.Printf("control: central gone, data plane and realm continue serving (cert=%s)",
-				e.vault.ExpiresAt().Format(time.RFC3339))
-			e.authCh = nil
-		},
-	}, e.edgeID)
-	e.authCh = ch
-	go e.trafficReportLoop(ctx, ch)
-
 	e.auth.OnDisconnect = func(id string) {
-		if ch := e.authCh; ch != nil {
-			ch.Send(control.MsgDisconnected, control.DisconnectedPayload{UserID: id})
+		if ws := e.workerWS(); ws != nil {
+			body, _ := json.Marshal(map[string]any{"type": "disconnect", "userID": id})
+			ws.Write(ctx, websocket.MessageText, body)
 		}
 	}
-
-	go ch.Run(ctx)
-
-	// Unblock recvLoop on Ctrl+C: close channel when ctx cancels
-	go func() {
-		select {
-		case <-ctx.Done():
-			ch.Close()
-		case <-ch.Done():
-		}
-	}()
-
-	// Identify: send hardware ID + network info, wait for central verdict
-	pubIPs, locIPs, isPrivate := e.netInfo()
-	ident := control.IdentifyPayload{
-		DeviceID:   deviceID(),
-		Name:       e.edgeID,
-		PublicIPs:  pubIPs,
-		LocalIPs:   locIPs,
-		IsPrivate:  isPrivate,
-		Version:    1,
-	}
-	for _, ip := range pubIPs {
-		if net.ParseIP(ip).To4() != nil {
-			ident.PublicIPv4 = ip
-		} else {
-			ident.PublicIPv6 = ip
-		}
-	}
-	ch.Send(control.MsgIdentify, ident)
-
-	select {
-	case err := <-identCh:
-		if err != nil {
-			tlsConn.Close()
-			e.centralMu.Lock()
-			e.centralActive = false
-			e.centralMu.Unlock()
-			return
-		}
-	case <-time.After(10 * time.Second):
-		log.Printf("control: identify timeout")
-		tlsConn.Close()
-		e.centralMu.Lock()
-		e.centralActive = false
-		e.centralMu.Unlock()
-		return
-	}
-
-	// Wait for channel to close (central disconnect)
-	<-ch.Done()
-
-	e.centralMu.Lock()
-	e.centralActive = false
-	e.centralMu.Unlock()
+	go e.workerWSLoop(ctx)
+	<-ctx.Done()
+	<-e.stopped
+	return ctx.Err()
 }
+
+// handleCentral removed — edge uses Cloudflare Worker only
+// All legacy TCP central, Ed25519 handshake, TLS pinning code is deleted.
 
 func (e *edge) applyConfig(ctx context.Context, p control.ConfigPayload) error {
 	if err := e.cfgSrc.Apply(p); err != nil {
@@ -565,7 +283,7 @@ func (e *edge) rebuildServer(ctx context.Context) error {
 		},
 		Conn:                  connForHcore,
 		Outbound:              &directOutbound{},
-		Authenticator:         &centralAuth{edge: e},
+		Authenticator:         e.auth,
 		EventLogger:           e.auth,
 		TrafficLogger:         e.auth,
 		MasqHandler:           e.masqAtomic,
@@ -634,13 +352,6 @@ func (e *edge) rebuildServer(ctx context.Context) error {
 
 	log.Printf("data: server (re)built, cert expires %s, masq=%s, tcpmbps=%d",
 		e.vault.ExpiresAt().Format(time.RFC3339), cfg.Config.MasqDomain, cfg.Config.TCPMbps)
-	// Notify central that server is running
-	if ch := e.authCh; ch != nil {
-		ch.Send(control.MsgError, control.ErrorPayload{
-			Code:    "status",
-			Message: "running:" + listenAddr,
-		})
-	}
 	return nil
 }
 
@@ -677,30 +388,7 @@ func (e *edge) serveDataPlane(ctx context.Context) {
 	}
 }
 
-func (e *edge) trafficReportLoop(ctx context.Context, ch *control.Channel) {
-	t := time.NewTicker(60 * time.Second)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-		stats := e.auth.AllStats()
-		users := make([]control.UserTraffic, 0, len(stats))
-		for id, st := range stats {
-			if st.Tx > 0 || st.Rx > 0 {
-				users = append(users, control.UserTraffic{
-					UserID: id, Tx: st.Tx, Rx: st.Rx, Online: st.Online,
-				})
-			}
-		}
-		if len(users) == 0 {
-			continue
-		}
-		ch.Send(control.MsgTrafficReport, control.TrafficReportPayload{Users: users})
-	}
-}
+// trafficReportLoop removed — traffic is cached locally, reported on demand
 
 func (e *edge) shutdownServerLocked() {
 	if e.srv != nil {
@@ -1392,21 +1080,4 @@ func edgeIDFile() string {
 	return cache + "/mscope-edge-id"
 }
 
-func loadCentralPubFile(path string) (ed25519.PublicKey, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	return decodeCentralPub(b)
-}
-
-func decodeCentralPub(b []byte) (ed25519.PublicKey, error) {
-	block, _ := pem.Decode(b)
-	if block == nil {
-		return nil, errors.New("no PEM block found")
-	}
-	if len(block.Bytes) == ed25519.PublicKeySize {
-		return ed25519.PublicKey(block.Bytes), nil
-	}
-	return nil, fmt.Errorf("pubkey wrong size: %d", len(block.Bytes))
-}
+// loadCentralPubFile and decodeCentralPub removed — no legacy TCP central needed
