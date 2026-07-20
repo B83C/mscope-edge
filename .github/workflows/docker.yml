@@ -45,6 +45,12 @@ jobs:
             type=ref,event=tag
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
+      - name: Extract Hysteria version
+        id: hyver
+        run: |
+          VER=$(grep 'apernet/hysteria/core' go.mod | awk '{print $2}' | sed 's/^v//')
+          echo "version=v${VER}-mscope" >> $GITHUB_OUTPUT
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -54,6 +60,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
+            VERSION=${{ steps.hyver.outputs.version }}
             MTLS_CERT_B64=${{ secrets.MTLS_CERT_B64 }}
             MTLS_KEY_B64=${{ secrets.MTLS_KEY_B64 }}
           cache-from: type=gha

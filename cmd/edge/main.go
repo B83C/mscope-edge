@@ -25,6 +25,7 @@ import (
 var (
 	mtlsCertB64 string
 	mtlsKeyB64  string
+	version     = "dev" // set at build: -ldflags="-X main.version=v1.0.0"
 )
 
 func main() {
