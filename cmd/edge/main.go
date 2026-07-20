@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/rand"
+	"os/exec"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
@@ -1309,28 +1309,57 @@ func remoteAddrIP(addr net.Addr) string {
 }
 
 func deviceID() string {
-	b, err := os.ReadFile("/etc/machine-id")
-	if err == nil && len(b) >= 32 {
-		return string(b[:32])
+	h := sha256.New()
+	// Collect hardware attributes
+	if b, err := os.ReadFile("/etc/machine-id"); err == nil {
+		h.Write(b)
 	}
-	b, err = os.ReadFile("/var/lib/dbus/machine-id")
-	if err == nil && len(b) >= 32 {
-		return string(b[:32])
+	if b, err := os.ReadFile("/var/lib/dbus/machine-id"); err == nil {
+		h.Write(b)
 	}
-	b, err = os.ReadFile("/proc/sys/kernel/random/boot_id")
-	if err == nil && len(b) >= 36 {
-		return string(b[:36])
+	if b, err := os.ReadFile("/proc/sys/kernel/random/boot_id"); err == nil {
+		h.Write(b)
 	}
-	// Last resort: generate a UUID and cache it
-	idPath := edgeIDFile()
-	if b, err := os.ReadFile(idPath); err == nil && len(b) > 0 {
-		return string(b)
+	if host, err := os.Hostname(); err == nil {
+		h.Write([]byte(host))
 	}
-	var buf [16]byte
-	rand.Read(buf[:])
-	id := fmt.Sprintf("%x", buf)
-	os.WriteFile(idPath, []byte(id), 0644)
+	if addrs, err := net.Interfaces(); err == nil {
+		for _, a := range addrs {
+			if len(a.HardwareAddr) > 0 {
+				h.Write(a.HardwareAddr)
+			}
+		}
+	}
+	// Windows / macOS specific
+	if b := readPlatformUUID(); len(b) > 0 {
+		h.Write(b)
+	}
+	id := fmt.Sprintf("%x", h.Sum(nil)[:16])
+	// Cache so it's stable within a session
+	os.WriteFile(edgeIDFile(), []byte(id), 0644)
 	return id
+}
+
+func readPlatformUUID() []byte {
+	// Windows: WMI MachineGUID
+	if b, err := os.ReadFile("C:\\Windows\\System32\\license.rtf"); err == nil && len(b) > 0 {
+		h := sha256.Sum256(b)
+		return h[:]
+	}
+	// macOS: IOPlatformUUID via ioreg
+	if b, err := exec.Command("ioreg", "-rd1", "-c", "IOPlatformExpertDevice").Output(); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			if strings.Contains(line, "IOPlatformUUID") {
+				parts := strings.Split(line, "=")
+				if len(parts) == 2 {
+					uuid := strings.TrimSpace(parts[1])
+					uuid = strings.Trim(uuid, "\"")
+					return []byte(uuid)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func edgeIDFile() string {
