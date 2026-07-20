@@ -47,7 +47,6 @@ func main() {
 		centralPub  = flag.String("central-pub", "", "path to central public key; overrides built-in")
 		edgeID      = flag.String("edge-id", "", "edge name (default: hostname)")
 		workerURL   = flag.String("worker-url", "", "Cloudflare Worker URL (disables TCP central)")
-		workerToken = flag.String("worker-token", "", "edge token for Worker auth")
 	)
 	flag.Parse()
 
@@ -96,10 +95,6 @@ func main() {
 	if *workerURL != "" {
 		log.Printf("worker: using Cloudflare Worker at %s", *workerURL)
 		e.workerDeviceID = deviceID()
-		if *workerToken == "" {
-			log.Fatal("worker: -worker-token is required when -worker-url is set")
-		}
-		e.workerToken = *workerToken
 	}
 
 	if err := e.run(ctx, *centralAddr); err != nil && !errors.Is(err, context.Canceled) {
@@ -135,7 +130,6 @@ type edge struct {
 
 	workerURL       string
 	workerDeviceID  string
-	workerToken     string
 	workerWSConn    *websocket.Conn
 	workerWSMu      sync.Mutex
 
@@ -1054,7 +1048,7 @@ func (e *edge) workerWSLoop(ctx context.Context) {
 		}
 		u := strings.Replace(e.workerURL, "https://", "wss://", 1)
 		u = strings.Replace(u, "http://", "ws://", 1)
-		u += "/ws?token=" + e.workerToken
+		u += "/ws?deviceID=" + e.workerDeviceID
 
 		c, _, err := websocket.Dial(ctx, u, nil)
 		if err != nil {
@@ -1074,8 +1068,8 @@ func (e *edge) workerWSLoop(ctx context.Context) {
 		e.setWorkerWS(c)
 		log.Printf("worker: ws connected")
 
-		// Send join with version info
-		joinBody, _ := json.Marshal(map[string]any{"type": "join", "deviceID": e.workerDeviceID, "version": "1.0"})
+		// Send join with edge info
+		joinBody, _ := json.Marshal(map[string]any{"type": "join", "deviceID": e.workerDeviceID, "name": e.edgeID, "version": "1.0"})
 		c.Write(ctx, websocket.MessageText, joinBody)
 
 		for {
