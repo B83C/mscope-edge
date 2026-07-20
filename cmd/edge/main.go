@@ -37,9 +37,15 @@ import (
 	"github.com/apernet/hysteria/extras/v2/realm"
 )
 
-// Set at build time via -ldflags -X main.centralPubB64=<base64>
-// If empty, falls back to -central-pub flag or certs/central.pub file.
-var centralPubB64 string
+// Set at build time via -ldflags
+var (
+	centralPubB64 string // central Ed25519 public key
+
+	// mTLS client cert for Cloudflare API Shield
+	// Bake with: -ldflags="-X main.mtlsCertB64=$(base64 < client.pem) -X main.mtlsKeyB64=$(base64 < client.key)"
+	mtlsCertB64 string // PEM of client certificate
+	mtlsKeyB64  string // PEM of client private key
+)
 
 func main() {
 	var (
@@ -92,6 +98,23 @@ func main() {
 		auth:       auth.NewStore(),
 		workerURL:  *workerURL,
 	}
+
+	// mTLS client cert for Cloudflare API Shield
+	if mtlsCertB64 != "" && mtlsKeyB64 != "" {
+		certPEM, _ := base64.StdEncoding.DecodeString(mtlsCertB64)
+		keyPEM, _ := base64.StdEncoding.DecodeString(mtlsKeyB64)
+		if len(certPEM) > 0 && len(keyPEM) > 0 {
+			cert, err := tls.X509KeyPair(certPEM, keyPEM)
+			if err == nil {
+				e.workerTLS = &tls.Config{
+					Certificates: []tls.Certificate{cert},
+					MinVersion:   tls.VersionTLS13,
+				}
+				log.Printf("mtls: client cert loaded (cn=%s)", "mscope-edge")
+			}
+		}
+	}
+
 	if *workerURL != "" {
 		log.Printf("worker: using Cloudflare Worker at %s", *workerURL)
 		e.workerDeviceID = deviceID()
@@ -130,6 +153,7 @@ type edge struct {
 
 	workerURL       string
 	workerDeviceID  string
+	workerTLS       *tls.Config // mTLS client cert for Cloudflare
 	workerWSConn    *websocket.Conn
 	workerWSMu      sync.Mutex
 
@@ -991,8 +1015,19 @@ func (e *edge) setWorkerWS(c *websocket.Conn) {
 	e.workerWSConn = c
 }
 
+func (e *edge) workerHTTPClient() *http.Client {
+	if e.workerTLS != nil {
+		return &http.Client{
+			Transport: &http.Transport{TLSClientConfig: e.workerTLS},
+			Timeout:   10 * time.Second,
+		}
+	}
+	return http.DefaultClient
+}
+
 func (e *edge) bootstrapFromWorker(ctx context.Context) error {
-	resp, err := http.Get(e.workerURL + "/edge/" + e.workerDeviceID)
+	hc := e.workerHTTPClient()
+	resp, err := hc.Get(e.workerURL + "/edge/" + e.workerDeviceID)
 	if err != nil {
 		return fmt.Errorf("worker GET: %w", err)
 	}
@@ -1048,9 +1083,17 @@ func (e *edge) workerWSLoop(ctx context.Context) {
 		}
 		u := strings.Replace(e.workerURL, "https://", "wss://", 1)
 		u = strings.Replace(u, "http://", "ws://", 1)
-		u += "/ws?deviceID=" + e.workerDeviceID
+		u += "/ws"
 
-		c, _, err := websocket.Dial(ctx, u, nil)
+		var wsOpts *websocket.DialOptions
+		if e.workerTLS != nil {
+			wsOpts = &websocket.DialOptions{
+				HTTPClient: &http.Client{
+					Transport: &http.Transport{TLSClientConfig: e.workerTLS},
+				},
+			}
+		}
+		c, _, err := websocket.Dial(ctx, u, wsOpts)
 		if err != nil {
 			log.Printf("worker: ws dial error: %v (retry in %v)", err, reconnect)
 			select {
