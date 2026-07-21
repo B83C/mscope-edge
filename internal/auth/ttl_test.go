@@ -156,7 +156,7 @@ func TestConcurrentAuth(t *testing.T) {
 	s.Apply(control.GrantsPayload{Grants: []control.UserGrant{testGrant("alice", "x")}})
 
 	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -218,7 +218,7 @@ func TestAuthWithTrafficLoggingAfterAuth(t *testing.T) {
 	})
 
 	// Three concurrent connections from the same user
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		ok, id := s.Authenticate(&net.TCPAddr{IP: net.IPv4(10, 0, 0, 1), Port: 40000 + i}, "hy-test:pass", 0)
 		if !ok {
 			t.Fatalf("connection %d should auth", i)

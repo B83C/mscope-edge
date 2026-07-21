@@ -363,7 +363,7 @@ func TestE2E_ConcurrentDial(t *testing.T) {
 	var mu sync.Mutex
 	errs := make([]error, 0)
 	var wg sync.WaitGroup
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
