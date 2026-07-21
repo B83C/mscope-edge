@@ -102,13 +102,15 @@ type edge struct {
 	publicIPs []string
 	localIPs  []string
 
-	readyCh chan struct{}
-	stopped chan struct{}
+	readyCh   chan struct{}
+	stopped   chan struct{}
+	replaced  chan struct{} // closed when edge is replaced by a newer instance
 }
 
 func (e *edge) run(ctx context.Context) error {
 	e.readyCh = make(chan struct{})
 	e.stopped = make(chan struct{})
+	e.replaced = make(chan struct{})
 
 	go e.serveDataPlane(ctx)
 
@@ -137,8 +139,13 @@ func (e *edge) run(ctx context.Context) error {
 			ws.Write(ctx, websocket.MessageText, body)
 		}
 	}
-	go e.workerWSLoop(ctx)
-	<-ctx.Done()
+	go e.workerWSLoop(ctx, e.replaced)
+	select {
+	case <-ctx.Done():
+	case <-e.replaced:
+		log.Printf("worker: replaced by newer instance, shutting down")
+		stop()
+	}
 	<-e.stopped
 	return ctx.Err()
 }
