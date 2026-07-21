@@ -110,6 +110,67 @@ func TestE2E_Auth_Success(t *testing.T) {
 	cl.Close()
 }
 
+// TestE2E_Auth_ExpiredGrant — grant with past ExpiresAt is rejected.
+func TestE2E_Auth_ExpiredGrant(t *testing.T) {
+	s := NewStore()
+	s.Apply(control.GrantsPayload{Grants: []control.UserGrant{
+		{UserID: "alice", Secret: "x", MaxClients: 3, ExpiresAt: time.Now().Add(-1 * time.Hour)},
+	}})
+	_, pool, addr, stop := startServer(t, s)
+	defer stop()
+
+	_, _, err := hclient.NewClient(&hclient.Config{
+		ServerAddr: addr,
+		Auth:       "alice:x",
+		TLSConfig:  hclient.TLSConfig{ServerName: "test", RootCAs: pool},
+	})
+	if err == nil {
+		t.Fatal("expected expired grant to be rejected")
+	}
+	t.Logf("expired rejected: %v", err)
+}
+
+// TestE2E_Auth_MultipleUsers — multiple users all authenticate.
+func TestE2E_Auth_MultipleUsers(t *testing.T) {
+	s := NewStore()
+	s.Apply(control.GrantsPayload{Grants: []control.UserGrant{
+		{UserID: "alice", Secret: "a", MaxClients: 3},
+		{UserID: "bob", Secret: "b", MaxClients: 3},
+		{UserID: "charlie", Secret: "c", MaxClients: 3},
+	}})
+	_, pool, addr, stop := startServer(t, s)
+	defer stop()
+
+	for _, tc := range []struct{ user, secret string }{
+		{"alice", "a"},
+		{"bob", "b"},
+		{"charlie", "c"},
+	} {
+		cl := dial(t, addr, tc.user+":"+tc.secret, pool)
+		cl.Close()
+	}
+}
+
+// TestE2E_Auth_NonExistingUser — user not in grants rejected.
+func TestE2E_Auth_NonExistingUser(t *testing.T) {
+	s := NewStore()
+	s.Apply(control.GrantsPayload{Grants: []control.UserGrant{
+		{UserID: "alice", Secret: "x", MaxClients: 3},
+	}})
+	_, pool, addr, stop := startServer(t, s)
+	defer stop()
+
+	_, _, err := hclient.NewClient(&hclient.Config{
+		ServerAddr: addr,
+		Auth:       "nobody:x",
+		TLSConfig:  hclient.TLSConfig{ServerName: "test", RootCAs: pool},
+	})
+	if err == nil {
+		t.Fatal("expected non-existing user to be rejected")
+	}
+	t.Logf("non-existing rejected: %v", err)
+}
+
 // TestE2E_Auth_WrongPassword — wrong secret rejected.
 func TestE2E_Auth_WrongPassword(t *testing.T) {
 	s := NewStore()
