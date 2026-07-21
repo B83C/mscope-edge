@@ -43,7 +43,7 @@ func (e *edge) workerHTTPClient() *http.Client {
 
 func (e *edge) bootstrapFromWorker(ctx context.Context) error {
 	hc := e.workerHTTPClient()
-	resp, err := hc.Get(e.workerURL + "/edge/" + e.workerDeviceID)
+	resp, err := hc.Get(e.workerURL + "/api/edge/" + e.workerDeviceID)
 	if err != nil {
 		return fmt.Errorf("worker GET: %w", err)
 	}
@@ -96,7 +96,7 @@ func (e *edge) workerWSLoop(ctx context.Context, replacedCh chan struct{}) {
 		}
 		u := strings.Replace(e.workerURL, "https://", "wss://", 1)
 		u = strings.Replace(u, "http://", "ws://", 1)
-		u += "/ws"
+		u += "/api/ws"
 
 		var wsOpts *websocket.DialOptions
 		if e.workerTLS != nil {
