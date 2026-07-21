@@ -7,13 +7,15 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Lowercase image name
+        run: echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
 
       - name: Extract version
         id: version
@@ -37,6 +39,8 @@ jobs:
           context: .
           push: true
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest,${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.VERSION }}
+          labels: |
+            org.opencontainers.image.source=${{ github.repositoryUrl }}
           build-args: |
             VERSION=${{ steps.version.outputs.VERSION }}
             MTLS_CERT_B64=${{ secrets.MTLS_CERT_B64 }}
