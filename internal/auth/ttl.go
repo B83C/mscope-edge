@@ -80,7 +80,7 @@ func (s *Store) Apply(payload control.GrantsPayload) {
 	defer s.mu.Unlock()
 	now := time.Now()
 	for _, g := range payload.Grants {
-		if now.After(g.ExpiresAt) {
+		if !g.ExpiresAt.IsZero() && now.After(g.ExpiresAt) {
 			delete(s.grants, g.UserID)
 			continue
 		}
