@@ -19,6 +19,7 @@ RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
     -o /edge ./cmd/edge
 
 FROM alpine:3.21 AS runtime
+ARG VERSION
 LABEL org.opencontainers.image.version=${VERSION}
 RUN apk add --no-cache ca-certificates tzdata
 COPY --from=builder /edge /usr/bin/mscope-edge
