@@ -37,8 +37,8 @@ func main() {
 		log.Fatalf("hostname: %v", err)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	e := &edge{
 		edgeID:    hostname,
@@ -46,6 +46,7 @@ func main() {
 		cfgSrc:    configsource.New(),
 		auth:      auth.NewStore(),
 		workerURL: *workerURL,
+		cancel:    cancel,
 	}
 
 	if mtlsCertB64 != "" && mtlsKeyB64 != "" {
@@ -102,9 +103,11 @@ type edge struct {
 	publicIPs []string
 	localIPs  []string
 
-	readyCh   chan struct{}
-	stopped   chan struct{}
-	replaced  chan struct{} // closed when edge is replaced by a newer instance
+	cancel context.CancelFunc
+
+	readyCh  chan struct{}
+	stopped  chan struct{}
+	replaced chan struct{}
 }
 
 func (e *edge) run(ctx context.Context) error {
@@ -144,7 +147,7 @@ func (e *edge) run(ctx context.Context) error {
 	case <-ctx.Done():
 	case <-e.replaced:
 		log.Printf("worker: replaced by newer instance, shutting down")
-		stop()
+		e.cancel()
 	}
 	<-e.stopped
 	return ctx.Err()
