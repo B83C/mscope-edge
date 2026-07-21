@@ -91,7 +91,7 @@ func (s *Store) Apply(payload control.GrantsPayload) {
 		}
 	}
 	for id, g := range s.grants {
-		if now.After(g.expires) {
+		if !g.expires.IsZero() && now.After(g.expires) {
 			delete(s.grants, id)
 		}
 	}
@@ -129,7 +129,7 @@ func (s *Store) Authenticate(addr net.Addr, auth string, tx uint64) (bool, strin
 	if !found {
 		return false, ""
 	}
-	if time.Now().After(g.expires) {
+	if !g.expires.IsZero() && time.Now().After(g.expires) {
 		return false, ""
 	}
 	h := hashSecret(secret)

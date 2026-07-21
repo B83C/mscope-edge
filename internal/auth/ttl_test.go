@@ -174,6 +174,80 @@ func TestConcurrentAuth(t *testing.T) {
 	_ = rx
 }
 
+// TestAuthWithWorkerGrantFormat verifies that the exact grant format
+// pushed by the edge-worker (via buildConfig → GrantsPayload) is accepted
+// by the auth.Store. This is the end-to-end auth chain test.
+func TestAuthWithWorkerGrantFormat(t *testing.T) {
+	s := NewStore()
+	// This is exactly what the worker pushes:
+	// {"grants": [{"userID": "test", "secret": "pass", "maxClients": 3}]}
+	s.Apply(control.GrantsPayload{
+		Grants: []control.UserGrant{
+			{UserID: "test", Secret: "pass", MaxClients: 3},
+		},
+	})
+
+	// Client sends "test:pass" — same format as parseAuth expects
+	ok, id := s.Authenticate(&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, "test:pass", 0)
+	if !ok {
+		t.Fatal("auth should succeed with test:pass")
+	}
+	if id != "test" {
+		t.Fatalf("expected userID 'test', got %q", id)
+	}
+
+	// Wrong password should fail
+	if ok, _ := s.Authenticate(&net.TCPAddr{}, "test:wrong", 0); ok {
+		t.Fatal("auth should fail with wrong password")
+	}
+
+	// Unknown user should fail
+	if ok, _ := s.Authenticate(&net.TCPAddr{}, "unknown:x", 0); ok {
+		t.Fatal("auth should fail for unknown user")
+	}
+}
+
+// TestAuthWithTrafficLoggingAfterAuth validates the full flow:
+// auth → session counting → traffic logging → stats.
+func TestAuthWithTrafficLoggingAfterAuth(t *testing.T) {
+	s := NewStore()
+	s.Apply(control.GrantsPayload{
+		Grants: []control.UserGrant{
+			{UserID: "hy-test", Secret: "pass", MaxClients: 5},
+		},
+	})
+
+	// Three concurrent connections from the same user
+	for i := 0; i < 3; i++ {
+		ok, id := s.Authenticate(&net.TCPAddr{IP: net.IPv4(10, 0, 0, 1), Port: 40000 + i}, "hy-test:pass", 0)
+		if !ok {
+			t.Fatalf("connection %d should auth", i)
+		}
+		if id != "hy-test" {
+			t.Fatalf("expected hy-test, got %q", id)
+		}
+	}
+
+	s.LogTraffic("hy-test", 1000, 2000)
+	s.LogTraffic("hy-test", 500, 300)
+
+	tx, rx, online := s.UserStats("hy-test")
+	if tx != 1500 {
+		t.Errorf("expected tx=1500, got %d", tx)
+	}
+	if rx != 2300 {
+		t.Errorf("expected rx=2300, got %d", rx)
+	}
+	if online {
+		t.Error("expected offline (no LogOnlineState call)")
+	}
+
+	active := s.ActiveSessions()
+	if active["hy-test"] != 3 {
+		t.Errorf("expected 3 active sessions, got %d", active["hy-test"])
+	}
+}
+
 func TestParseAuth(t *testing.T) {
 	tests := []struct {
 		input      string

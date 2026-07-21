@@ -3,8 +3,8 @@ module github.com/B83C/mscope-edge
 go 1.26.4
 
 require (
-	github.com/apernet/hysteria/core/v2 v2.9.3
-	github.com/apernet/hysteria/extras/v2 v2.9.3
+	github.com/apernet/hysteria/core/v2 v2.10.0
+	github.com/apernet/hysteria/extras/v2 v2.10.0
 )
 
 require (
@@ -26,11 +26,11 @@ require (
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
-	golang.org/x/crypto v0.51.0 // indirect
+	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842 // indirect
-	golang.org/x/net v0.55.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/net v0.56.0 // indirect
+	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
