@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/B83C/mscope-edge/internal/auth"
 	"github.com/B83C/mscope-edge/internal/certvault"
@@ -149,7 +150,11 @@ func (e *edge) run(ctx context.Context) error {
 		log.Printf("worker: replaced by newer instance, shutting down")
 		e.cancel()
 	}
-	<-e.stopped
+	select {
+	case <-e.stopped:
+	case <-time.After(5 * time.Second):
+		log.Printf("data: shutdown timeout, forcing exit")
+	}
 	return ctx.Err()
 }
 
