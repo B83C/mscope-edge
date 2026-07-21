@@ -14,6 +14,4 @@ users.json
 # Runtime
 *.log
 pin.json
-edge
-edge
-edge
+/edge
