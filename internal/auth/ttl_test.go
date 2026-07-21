@@ -114,17 +114,7 @@ func TestMaxClients_DisconnectReleasesSlot(t *testing.T) {
 	}
 }
 
-func TestRevoke(t *testing.T) {
-	s := NewStore()
-	s.Apply(control.GrantsPayload{Grants: []control.UserGrant{testGrant("alice", "x")}})
-
-	s.Revoke(control.RevokePayload{Users: []string{"alice"}})
-
-	ok, _ := s.Authenticate(&net.TCPAddr{}, "alice:x", 0)
-	if ok {
-		t.Error("expected auth to fail after revoke")
-	}
-}
+// TestRevoke removed — Revoke was part of legacy TCP central protocol
 
 func TestTrafficLogger(t *testing.T) {
 	s := NewStore()

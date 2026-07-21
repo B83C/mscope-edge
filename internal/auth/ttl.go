@@ -97,14 +97,6 @@ func (s *Store) Apply(payload control.GrantsPayload) {
 	}
 }
 
-func (s *Store) Revoke(payload control.RevokePayload) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, id := range payload.Users {
-		delete(s.grants, id)
-	}
-}
-
 func (s *Store) SetMaxClients(userID string, max int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
